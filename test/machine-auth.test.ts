@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -128,6 +129,7 @@ async function setup(existing?: {
     allowedHosts: ["captatum.test"],
     allowedOrigins: [ORIGIN],
   });
+  await app.listen({ host: "127.0.0.1", port: 0 });
   return {
     app,
     audit,
@@ -167,34 +169,52 @@ async function callCaptatum(
   app: Awaited<ReturnType<typeof createHttpApp>>,
   accessToken: string,
 ) {
-  return app.inject({
-    method: "POST",
-    url: "/mcp",
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      host: "captatum.test",
-      accept: "application/json, text/event-stream",
-      "content-type": "application/json",
-      "mcp-protocol-version": "2025-11-25",
-    },
-    payload: {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: {
-        name: "captatum",
-        arguments: {
-          url: "https://example.com",
-          output: "extract",
-          allowRender: true,
-          debug: false,
-          timeoutMs: 20_000,
-          maxBytes: 2_097_152,
-          budget: 4000,
-        },
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "captatum",
+      arguments: {
+        url: "https://example.com",
+        output: "extract",
+        allowRender: true,
+        debug: false,
+        timeoutMs: 20_000,
+        maxBytes: 2_097_152,
+        budget: 4000,
       },
     },
   });
+  const origin = new URL(app.listeningOrigin);
+  return new Promise<{ statusCode: number; body: string }>(
+    (resolvePromise, rejectPromise) => {
+      const request = httpRequest({
+        hostname: origin.hostname,
+        port: origin.port,
+        path: "/mcp",
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          host: "captatum.test",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+          "mcp-protocol-version": "2025-11-25",
+        },
+      }, (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("error", rejectPromise);
+        response.on("end", () => resolvePromise({
+          statusCode: response.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString("utf8"),
+        }));
+      });
+      request.on("error", rejectPromise);
+      request.end(payload);
+    },
+  );
 }
 
 test("machine provision persists only a hash and exchanges for a scoped token", async () => {
