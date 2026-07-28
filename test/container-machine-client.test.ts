@@ -23,3 +23,23 @@ test("container deployment uses the offline direct-node machine-client entrypoin
   assert.doesNotMatch(deploy, /exec gateway[^\n]*\n\s+pnpm/);
   assert.ok(readFileSync(join(ROOT, "src", "machine-client.ts"), "utf8").length > 0);
 });
+
+test("Docker tunnel peer is pinned and browser forwarding remains unauthenticated", () => {
+  for (const path of [
+    ["deploy", "docker-compose.yml"],
+    ["deploy", "ec2-user-data.sh"],
+  ]) {
+    const deploy = readFileSync(join(ROOT, ...path), "utf8");
+    assert.match(
+      deploy,
+      /CAPTATUM_TRUSTED_PROXY_CIDRS: "172\.29\.255\.249\/32"/,
+    );
+    assert.match(deploy, /subnet: "172\.29\.255\.248\/29"/);
+    assert.match(deploy, /gateway: "172\.29\.255\.249"/);
+    assert.match(deploy, /network_mode: "service:gateway"/);
+    assert.doesNotMatch(
+      deploy,
+      /CAPTATUM_TRUSTED_PROXY_CIDRS: "127\.0\.0\.1/,
+    );
+  }
+});

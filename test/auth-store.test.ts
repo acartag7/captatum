@@ -271,6 +271,7 @@ test("stored-DCR migration atomically purges legacy codes and refresh families o
       codeChallenge: "legacy-challenge",
       codeChallengeMethod: "S256",
       expiresAt: "2027-01-01T00:00:00.000Z",
+      grantGeneration: null,
     });
     await legacy.saveRefreshToken({
       tokenHash: refreshHash,
@@ -280,6 +281,7 @@ test("stored-DCR migration atomically purges legacy codes and refresh families o
       subject: "legacy-subject",
       scopes: ["fetch:read"],
       expiresAt: "2027-01-01T00:00:00.000Z",
+      grantGeneration: null,
     });
     await legacy.close();
 
@@ -345,6 +347,7 @@ test("stored-DCR migration rolls every purge back if any legacy delete fails", a
       codeChallenge: "legacy-challenge",
       codeChallengeMethod: "S256",
       expiresAt: "2027-01-01T00:00:00.000Z",
+      grantGeneration: null,
     });
     await legacy.saveRefreshToken({
       tokenHash: "e".repeat(64),
@@ -354,6 +357,7 @@ test("stored-DCR migration rolls every purge back if any legacy delete fails", a
       subject: "legacy-subject",
       scopes: ["fetch:read"],
       expiresAt: "2027-01-01T00:00:00.000Z",
+      grantGeneration: null,
     });
     await legacy.close();
     const db = new DatabaseSync(file);

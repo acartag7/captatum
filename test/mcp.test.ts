@@ -21,6 +21,7 @@ import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { assertHostedFlavor, createHttpApp, HostedFlavorError } from "../src/interfaces/http/app.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS } from "../src/interfaces/mcp/schema.ts";
+import { TEST_PROXY_AUTH_SECRET } from "./support/proxy-auth.ts";
 
 const NOW_MS = Date.parse("2026-06-16T12:00:00.000Z");
 const HOST = "captatum.test";
@@ -58,6 +59,7 @@ test("HTTP MCP listener refuses local-binary instead of exposing an unauthentica
       allowedHosts: [HOST],
       allowedOrigins: [ORIGIN],
       trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+      proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
     }),
     (error: unknown) => error instanceof HostedFlavorError,
   );
@@ -264,6 +266,7 @@ async function setup(options: { transformer?: TransformPort } = {}) {
     allowedHosts: [HOST],
     allowedOrigins: [ORIGIN],
     trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+    proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
   });
   return {
     app,

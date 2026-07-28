@@ -41,6 +41,11 @@ services:
       CAPTATUM_BROWSER_CDP_ENDPOINT: "http://127.0.0.1:9222"
       # OAuth state + stored clients share the private 0700 /data volume.
       CAPTATUM_SQLITE_PATH: "/data/captatum.sqlite"
+      # A host request to a Docker-published loopback port reaches the container
+      # from the bridge gateway, not from container loopback. Pin both the
+      # bridge and its only trusted peer so public callers keep separate rate
+      # buckets. The edge authenticator from ../.env is still required.
+      CAPTATUM_TRUSTED_PROXY_CIDRS: "172.29.255.249/32"
     volumes:
       - captatum-data:/data
     ports:
@@ -61,3 +66,10 @@ services:
 
 volumes:
   captatum-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: "172.29.255.248/29"
+          gateway: "172.29.255.249"

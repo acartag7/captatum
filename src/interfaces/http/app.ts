@@ -8,6 +8,7 @@ import type { CaptatumUseCase } from "../../application/use-cases/captatum.ts";
 import { config } from "../../config.ts";
 import { registerMcpRoute } from "./mcp-route.ts";
 import { sendHttpError } from "./errors.ts";
+import { authenticateProxyHeaders } from "./proxy-auth.ts";
 import type { CaptatumBulkMcpExecutor } from "../mcp/server.ts";
 
 export interface HttpAppDeps {
@@ -30,6 +31,9 @@ export interface HttpAppDeps {
   /** Socket peers allowed to supply the effective client address used by auth
    * rate limits. Forwarding headers from every other peer are ignored. */
   trustedProxyCidrs: string[];
+  /** Edge-only 32-byte authenticator required before forwarding headers carry
+   * authority, even when the socket peer is allowlisted. */
+  proxyAuthSecret: string;
   /** Raw captatum_bulk use case; absent when CAPTATUM_BULK_ENABLED is off (hosted). */
   bulk?: CaptatumBulkMcpExecutor;
 }
@@ -77,11 +81,26 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
   if (deps.trustedProxyCidrs.length === 0) {
     throw new Error("Hosted HTTP requires a non-empty trusted proxy allowlist");
   }
+  if (deps.proxyAuthSecret.length !== 43) {
+    throw new Error("Hosted HTTP requires a valid proxy authenticator");
+  }
   const app = Fastify({
     logger: false,
     bodyLimit: config.http.bodyLimitBytes,
     requestTimeout,
     trustProxy: deps.trustedProxyCidrs,
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    if (
+      authenticateProxyHeaders(
+        request.headers,
+        request.raw.headersDistinct,
+        request.raw.rawHeaders,
+        deps.proxyAuthSecret,
+      ) === "reject"
+    ) {
+      await reply.code(400).send({ error: "invalid_proxy_auth" });
+    }
   });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error, oauthConfig));
   app.get("/healthz", async () => ({ status: "ok" }));

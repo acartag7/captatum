@@ -22,6 +22,9 @@ persistent volume for the SQLite store. Cloudflare Access + Tunnel sit in front.
    documented final proxy peer IP/CIDR as observed by the service. If Railway
    cannot provide a stable narrow peer range, this hosted auth release cannot be
    deployed there securely; do not use `0.0.0.0/0` or a private-range wildcard.
+7. **Authenticated forwarding**: set `CAPTATUM_PROXY_AUTH_SECRET` and configure
+   the Cloudflare hostname rule to **Set static** `X-Captatum-Proxy-Auth` to the
+   same value. Railway's peer range alone is not forwarding authority.
 
 ## Tier-3 (optional JS rendering)
 

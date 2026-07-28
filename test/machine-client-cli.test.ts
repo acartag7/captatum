@@ -63,8 +63,8 @@ test("machine-client emits the durable credential before reporting a close failu
   const clients = new Map<string, unknown>();
   const exitCode = await runMachineClientCli(["provision", "close-failure", "fetch:read"], {
     env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: operatorPath },
-    stdout: { write(chunk: string) { stdout += chunk; return true; } },
-    stderr: { write(chunk: string) { stderr += chunk; return true; } },
+    stdout: { completion: "synchronous", write(chunk: string) { stdout += chunk; return true; } },
+    stderr: { completion: "synchronous", write(chunk: string) { stderr += chunk; return true; } },
     openStores: (async (selected: unknown) => {
       selectedConfig = selected;
       return {
@@ -178,8 +178,9 @@ test("stderr EPIPE cannot suppress a committed credential or durable audit", asy
       ["provision", "stderr-epipe", "fetch:read"],
       {
         env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
-        stdout: { write(chunk: string) { stdout += chunk; return true; } },
+        stdout: { completion: "synchronous", write(chunk: string) { stdout += chunk; return true; } },
         stderr: {
+          completion: "synchronous",
           write() {
             throw Object.assign(new Error("broken pipe"), { code: "EPIPE" });
           },
@@ -208,9 +209,12 @@ test("stderr EPIPE cannot suppress a committed credential or durable audit", asy
 for (const [label, stdout] of [
   [
     "EPIPE",
-    { write() { throw Object.assign(new Error("broken pipe"), { code: "EPIPE" }); } },
+    {
+      completion: "synchronous",
+      write() { throw Object.assign(new Error("broken pipe"), { code: "EPIPE" }); },
+    },
   ],
-  ["short write", { write() { return false; } }],
+  ["short write", { completion: "synchronous", write() { return false; } }],
 ] as const) {
   test(`stdout ${label} disables the committed credential before returning failure`, async () => {
     const dir = mkdtempSync(join(SAFE_TMP, "captatum-machine-stdout-"));
@@ -222,14 +226,14 @@ for (const [label, stdout] of [
         {
           env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
           stdout,
-          stderr: { write() { return true; } },
+          stderr: { completion: "synchronous", write() { return true; } },
         },
       );
       assert.equal(exitCode, 1);
       const listCode = await runMachineClientCli(["list"], {
         env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
-        stdout: { write(chunk: string) { listed += chunk; return true; } },
-        stderr: { write() { return true; } },
+        stdout: { completion: "synchronous", write(chunk: string) { listed += chunk; return true; } },
+        stderr: { completion: "synchronous", write() { return true; } },
       });
       assert.equal(listCode, 0);
       const clients = JSON.parse(listed) as Array<{
@@ -257,11 +261,12 @@ test("failed output compensation has a supported list then disable recovery", as
       {
         env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
         stdout: {
+          completion: "synchronous",
           write() {
             throw Object.assign(new Error("broken pipe"), { code: "EPIPE" });
           },
         },
-        stderr: { write(chunk: string) { stderr += chunk; return true; } },
+        stderr: { completion: "synchronous", write(chunk: string) { stderr += chunk; return true; } },
         openStores: async (selected, policy) => {
           const stores = await createHostedAuthStore(selected, policy);
           const db = new DatabaseSync(`${file}.clients`);
@@ -285,8 +290,8 @@ test("failed output compensation has a supported list then disable recovery", as
     assert.equal(
       await runMachineClientCli(["list"], {
         env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
-        stdout: { write(chunk: string) { listOutput += chunk; return true; } },
-        stderr: { write() { return true; } },
+        stdout: { completion: "synchronous", write(chunk: string) { listOutput += chunk; return true; } },
+        stderr: { completion: "synchronous", write() { return true; } },
       }),
       0,
     );
@@ -300,8 +305,8 @@ test("failed output compensation has a supported list then disable recovery", as
     assert.equal(
       await runMachineClientCli(["disable", listed[0]!.clientId], {
         env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
-        stdout: { write() { return true; } },
-        stderr: { write() { return true; } },
+        stdout: { completion: "synchronous", write() { return true; } },
+        stderr: { completion: "synchronous", write() { return true; } },
       }),
       0,
     );

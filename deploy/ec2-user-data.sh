@@ -33,6 +33,7 @@ services:
       HOST: "0.0.0.0"
       CAPTATUM_BROWSER_CDP_ENDPOINT: "http://127.0.0.1:9222"
       CAPTATUM_SQLITE_PATH: "/data/captatum.sqlite"
+      CAPTATUM_TRUSTED_PROXY_CIDRS: "172.29.255.249/32"
     env_file: /opt/captatum/.env
     ports:
       - "127.0.0.1:3000:3000"
@@ -46,6 +47,12 @@ services:
     restart: unless-stopped
 volumes:
   captatum-data:
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: "172.29.255.248/29"
+          gateway: "172.29.255.249"
 YAML
 
 # 3) .env must exist before up. If it doesn't, exit non-zero so cloud-init marks

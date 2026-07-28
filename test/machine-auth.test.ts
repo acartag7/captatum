@@ -33,6 +33,10 @@ import {
   APPLICATION_AGENT_DOCUMENT,
   applicationAgentArguments,
 } from "./support/application-agent-contract.ts";
+import {
+  authenticatedForwardingHeaders,
+  TEST_PROXY_AUTH_SECRET,
+} from "./support/proxy-auth.ts";
 
 const SAFE_TMP = realpathSync(tmpdir());
 const ISSUER = "https://captatum.test";
@@ -135,6 +139,7 @@ async function setup(existing?: {
     allowedHosts: ["captatum.test"],
     allowedOrigins: [ORIGIN],
     trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+    proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   return {
@@ -166,7 +171,7 @@ async function exchange(
   return requestHttp(app, "/oauth/token", "POST", {
       authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
       "content-type": "application/x-www-form-urlencoded",
-      ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : {}),
+      ...(forwardedFor ? authenticatedForwardingHeaders(forwardedFor) : {}),
     }, payload);
 }
 
@@ -448,7 +453,7 @@ test("failed CLI output cannot disable a newer successfully returned rotation", 
         env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: ctx.file },
         clock: ctx.clock,
         stdout: failedOutput as never,
-        stderr: { write() { return true; } },
+        stderr: { completion: "synchronous", write() { return true; } },
       },
     );
     assert.equal(exitCode, 2, "exact-version compensation reports the CAS conflict");
@@ -611,9 +616,48 @@ async function assertRegistrationFloodBounded(
     "POST",
     {
       "content-type": "application/json",
-      "x-forwarded-for": forwardedFor,
+      ...authenticatedForwardingHeaders(forwardedFor),
     },
     payload,
+  );
+  const directRegister = () => requestHttp(
+    app,
+    "/oauth/register",
+    "POST",
+    { "content-type": "application/json" },
+    payload,
+  );
+  for (const [header, value] of [
+    ["forwarded", "for=203.0.113.1"],
+    ["x-forwarded-for", "203.0.113.1"],
+    ["x-forwarded-host", "attacker.example"],
+    ["x-forwarded-proto", "javascript"],
+    ["x-forwarded-port", "31337"],
+    ["x-real-ip", "203.0.113.1"],
+    ["cf-connecting-ip", "203.0.113.1"],
+  ]) {
+    assert.equal(
+      (await requestHttp(
+        app,
+        "/oauth/register",
+        "POST",
+        {
+          "content-type": "application/json",
+          [header]: value,
+        },
+        payload,
+      )).statusCode,
+      400,
+      `the same-peer browser cannot assert ${header} without edge authentication`,
+    );
+  }
+  for (let attempt = 0; attempt < 10; attempt++) {
+    assert.equal((await directRegister()).statusCode, 201);
+  }
+  assert.equal(
+    (await directRegister()).statusCode,
+    429,
+    "the same-peer browser stays in one bounded direct-source bucket",
   );
   for (let attempt = 0; attempt < 10; attempt++) {
     const accepted = await register("198.51.100.10");
@@ -636,7 +680,7 @@ async function assertRegistrationFloodBounded(
       headers: {
         host: "captatum.test",
         "content-type": "application/json",
-        "x-forwarded-for": `203.0.113.${attempt + 1}`,
+        ...authenticatedForwardingHeaders(`203.0.113.${attempt + 1}`),
       },
       payload,
     });
@@ -649,7 +693,7 @@ async function assertRegistrationFloodBounded(
     headers: {
       host: "captatum.test",
       "content-type": "application/json",
-      "x-forwarded-for": "203.0.113.200",
+      ...authenticatedForwardingHeaders("203.0.113.200"),
     },
     payload,
   });
@@ -659,6 +703,32 @@ async function assertRegistrationFloodBounded(
     "an untrusted direct peer cannot select buckets with forwarding headers",
   );
 
+  assert.equal(
+    (await requestHttp(
+      app,
+      "/oauth/token",
+      "POST",
+      {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-forwarded-for": "203.0.113.2",
+      },
+      new URLSearchParams({
+        grant_type: "client_credentials",
+        scope: "fetch:transform",
+      }).toString(),
+    )).statusCode,
+    400,
+    "the same-peer browser cannot assert a token-limit identity without edge authentication",
+  );
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const invalid = await exchange(app, "mcc_missing", "mcs_missing");
+    assert.equal(invalid.statusCode, 401, invalid.body);
+  }
+  assert.equal(
+    (await exchange(app, "mcc_missing", "mcs_missing")).statusCode,
+    429,
+    "the same-peer browser stays in one bounded direct token bucket",
+  );
   for (let attempt = 0; attempt < 120; attempt++) {
     const invalid = await exchange(
       app,
@@ -710,6 +780,7 @@ async function assertShippedMachineCall(
     app,
     credential.clientId,
     credential.clientSecret,
+    "198.51.100.50",
   );
   assert.equal(tokenResponse.statusCode, 200, tokenResponse.body);
   const token = JSON.parse(tokenResponse.body);
@@ -741,6 +812,7 @@ function installHostedEnv(file: string): () => void {
     MCP_ALLOWED_HOSTS: "captatum.test",
     MCP_ALLOWED_ORIGINS: ORIGIN,
     CAPTATUM_TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128",
+    CAPTATUM_PROXY_AUTH_SECRET: TEST_PROXY_AUTH_SECRET,
     CF_ACCESS_ENABLED: "true",
     CF_ACCESS_AUDIENCE: "test-audience",
     CF_ACCESS_CERTS_URL:

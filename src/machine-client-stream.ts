@@ -1,10 +1,27 @@
 import type { AuthAuditEvent, AuditPort } from "mcp-sso";
 
-export interface CliWritable {
-  write(chunk: string, callback?: (error?: Error | null) => void): boolean;
-  once?(event: "error" | "close", listener: (error?: Error) => void): unknown;
-  removeListener?(event: "error" | "close", listener: (error?: Error) => void): unknown;
+type WriteCallback = (error?: Error | null) => void;
+
+export interface SyncCliWritable {
+  completion: "synchronous";
+  write(chunk: string): boolean;
 }
+
+export interface CallbackCliWritable {
+  completion: "callback";
+  write(chunk: string, callback: WriteCallback): boolean;
+}
+
+export interface EventedCliWritable {
+  write(chunk: string, callback?: (error?: Error | null) => void): boolean;
+  once(event: "error" | "close", listener: (error?: Error) => void): unknown;
+  removeListener(event: "error" | "close", listener: (error?: Error) => void): unknown;
+}
+
+export type CliWritable =
+  | SyncCliWritable
+  | CallbackCliWritable
+  | EventedCliWritable;
 
 export function stderrAudit(stderr: CliWritable): AuditPort {
   return {
@@ -33,15 +50,14 @@ export function writeAndFlush(
   stream: CliWritable,
   chunk: string,
 ): Promise<void> {
-  if (!stream.once || !stream.removeListener) {
-    if (stream.write.length >= 2) {
+  if (!isEvented(stream)) {
+    if (stream.completion === "callback") {
       return new Promise((resolvePromise, rejectPromise) => {
         try {
-          const accepted = stream.write(chunk, (error) => {
+          stream.write(chunk, (error) => {
             if (error) rejectPromise(error);
             else resolvePromise();
           });
-          if (!accepted) rejectPromise(new Error("short write"));
         } catch (error) {
           rejectPromise(
             error instanceof Error ? error : new Error("stream write failed"),
@@ -57,8 +73,8 @@ export function writeAndFlush(
     let settled = false;
     let cleanupScheduled = false;
     const cleanup = (): void => {
-      stream.removeListener!("error", onError);
-      stream.removeListener!("close", onClose);
+      stream.removeListener("error", onError);
+      stream.removeListener("close", onClose);
     };
     const deferCleanup = (): void => {
       if (cleanupScheduled) return;
@@ -93,12 +109,19 @@ export function writeAndFlush(
       if (error) rejectPromise(error);
       else resolvePromise();
     };
-    stream.once!("error", onError);
-    stream.once!("close", onClose);
+    stream.once("error", onError);
+    stream.once("close", onClose);
     try {
       stream.write(chunk, finish);
     } catch (error) {
       finish(error instanceof Error ? error : new Error("stream write failed"));
     }
   });
+}
+
+function isEvented(stream: CliWritable): stream is EventedCliWritable {
+  return "once" in stream
+    && typeof stream.once === "function"
+    && "removeListener" in stream
+    && typeof stream.removeListener === "function";
 }

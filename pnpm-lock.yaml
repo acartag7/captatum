@@ -21,8 +21,8 @@ importers:
         specifier: 6.2.3
         version: 6.2.3
       mcp-sso:
-        specifier: 0.3.1
-        version: 0.3.1(express@5.2.1)(fastify@5.8.5)(hono@4.12.25)
+        specifier: 0.3.2
+        version: 0.3.2(express@5.2.1)(fastify@5.8.5)(hono@4.12.25)
       playwright:
         specifier: 1.61.0
         version: 1.61.0
@@ -340,8 +340,8 @@ packages:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
     engines: {node: '>= 0.4'}
 
-  mcp-sso@0.3.1:
-    resolution: {integrity: sha512-bwDv9tYNtGl9fXSSWHWUxpWfMvkpdHjtPR/qA8XpqztC+aULkyeDwg0yqEmSLSiRUmO3D0Ijm5yoPc2l/wjRqQ==}
+  mcp-sso@0.3.2:
+    resolution: {integrity: sha512-lH3+0yLABvjHx3Mpe+SIy0nYm8u5+abbtiHEc2BQvuAHBOScb0q6Ca92QVuyJK24KtTX6/71VDSYG9MyJ9QHLQ==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -960,7 +960,7 @@ snapshots:
 
   math-intrinsics@1.1.0: {}
 
-  mcp-sso@0.3.1(express@5.2.1)(fastify@5.8.5)(hono@4.12.25):
+  mcp-sso@0.3.2(express@5.2.1)(fastify@5.8.5)(hono@4.12.25):
     dependencies:
       jose: 6.2.3
     optionalDependencies:

@@ -19,10 +19,17 @@ the contract reference; this file is the security reasoning.
 
 - Browser and agent clients are outside the gateway trust boundary.
 - The gateway is the security boundary for scopes and tools.
-- Forwarded client IP headers cross the gateway boundary only through a socket
-  peer in the boot-validated `CAPTATUM_TRUSTED_PROXY_CIDRS` allowlist. The
-  Mac mini trusts only the loopback cloudflared sidecar. Untrusted peers cannot
-  choose DCR/token rate-limit identities with forwarding headers.
+- Forwarded client IP headers cross the gateway boundary only when the socket
+  peer is in the boot-validated `CAPTATUM_TRUSTED_PROXY_CIDRS` allowlist **and**
+  `X-Captatum-Proxy-Auth` timing-safe-matches the 32-byte
+  `CAPTATUM_PROXY_AUTH_SECRET`. Cloudflare overwrites that internal header at
+  the edge; the gateway removes it from parsed and raw/distinct header views
+  before route dispatch. The same gate covers `Forwarded`, every Fastify
+  `X-Forwarded-*` authority (`For`, `Host`, `Proto`, and `Port`), `X-Real-IP`,
+  and `CF-Connecting-IP`, and removes all of them on rejection. A browser-sidecar
+  compromise can share the proxy's Pod/network address but not its secret, so
+  it cannot choose DCR/token rate-limit identities or framework host/protocol
+  authority.
 - The DEFAULT hosted state is two local SQLite files (`node:sqlite`, no network):
   mcp-sso OAuth codes/tokens at `CAPTATUM_SQLITE_PATH`, and DCR/machine clients at
   the derived `<path>.clients`. The configured path's parent is the private Captatum
@@ -71,16 +78,25 @@ the contract reference; this file is the security reasoning.
   machine, or 1024 total clients. Disabled machine tombstones count toward the
   total. Valid use refreshes an interactive last-used epoch; only interactive
   rows unused for 30 days are swept. Existing clients remain usable during a
-  registration flood. Forwarded addresses are honored only from an explicit
-  trusted-proxy IP/CIDR allowlist, so the tunnel does not collapse every public
-  caller into one global bucket and a direct caller cannot spoof a new bucket.
+  registration flood. Forwarded addresses are honored only for the conjunction
+  of an explicit proxy IP/CIDR allowlist and the edge-injected proxy
+  authenticator, so the tunnel does not collapse every public caller into one
+  global bucket and a direct caller or compromised co-tenant cannot spoof a new
+  bucket.
 - The first stored-DCR boot records one durable migration marker and deletes all
   legacy auth codes and refresh families in that same transaction before the
   listener opens. The stored-DCR config also HMAC-derives a versioned
   consent/flow signing secret, so pending pre-upgrade browser consent or
   upstream-flow JWTs cannot mint a new legacy authorization code after cutover.
-  A failure aborts boot. Legacy access JWTs get only their existing 600-second
-  natural-expiry grace.
+  mcp-sso additionally stamps stored-DCR auth codes, refresh families, and
+  refresh-token rows with durable grant generation `1`. Code consumption,
+  refresh rotation, and prior-scope accumulation require that generation;
+  refresh checks both family and token inside its transaction. A rolled-back
+  older binary omits the nullable columns and therefore creates legacy `NULL`
+  grants that fail closed after re-upgrade, including when their client id
+  names an existing stored client. Genuine generation-1 sessions survive
+  ordinary restarts. A first-cutover failure aborts boot. Legacy access JWTs
+  get only their existing 600-second natural-expiry grace.
 - Rebinding-proof outbound `guardedFetch` (the single egress primitive):
   - scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and
     keep sanitized URL values credential-free.
@@ -124,9 +140,9 @@ the contract reference; this file is the security reasoning.
   radius. The `page.route` SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
-  mode fails boot unless `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, and the
-  exact `CAPTATUM_TRUSTED_PROXY_CIDRS` peer allowlist are explicit; local mode
-  must stay loopback-only.
+  mode fails boot unless `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, the exact
+  `CAPTATUM_TRUSTED_PROXY_CIDRS` peer allowlist, and the
+  `CAPTATUM_PROXY_AUTH_SECRET` are explicit; local mode must stay loopback-only.
 - Response guards: reject `Content-Length` > max before reading; stream through a
   counting `TransformStream`.
 - Linear HTML extraction (REDOS-5): every element/close-tag/comment/`<style>`/svg-`<text>`
@@ -260,7 +276,7 @@ the contract reference; this file is the security reasoning.
 ## Auth Limits
 
 - **Library boundary:** the hosted OAuth 2.1 / DCR / PKCE / Cloudflare-Access
-  stack is owned by the **mcp-sso** library (`mcp-sso@0.3.1`, acartag7/mcp-sso) —
+  stack is owned by the **mcp-sso** library (`mcp-sso@0.3.2`, acartag7/mcp-sso) —
   captatum's own OAuth, extracted + hardened there. captatum's auth surface is
   reduced to: building a validated `BridgeConfig` from env
   (`src/application/mcp-sso-config.ts`), composing the `Bridge` +

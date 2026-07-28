@@ -24,8 +24,9 @@ browser-capable base image and unset `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`.
 
 See [`.env.example`](../.env.example) for the full env shape:
 `CAPTATUM_FLAVOR=hosted`, `OAUTH_*`, `CAPTATUM_SQLITE_PATH`, `MCP_ALLOWED_*`,
-`OPENROUTER_API_KEY`. Secrets (OAuth ES256 JWK, DB password) must come from your
-secret manager — never baked into the image.
+`CAPTATUM_TRUSTED_PROXY_CIDRS`, `CAPTATUM_PROXY_AUTH_SECRET`, and
+`OPENROUTER_API_KEY`. Secrets (OAuth ES256 JWK, proxy authenticator, DB
+password) must come from your secret manager — never baked into the image.
 
 ## Health & MCP
 
@@ -40,10 +41,17 @@ secret manager — never baked into the image.
 
 ## Hosted topology
 
-The hosted flavor runs as a pod with **three** containers:
+The hosted flavor runs as one gateway replica with:
 - **gateway** (`captatum`) — the MCP + fetch service (`node --no-warnings src/server.ts`).
 - a **reverse-tunnel** sidecar (e.g. `cloudflared`) — exposes the gateway without an inbound port.
 - a **browser sidecar** — long-lived Chromium over CDP for Tier-3 render, isolated to its own blast radius (no OAuth keys, no store, no env).
+
+The reverse tunnel's forwarding headers carry authority only with both its
+allowlisted socket address and the edge-injected proxy authenticator. This keeps
+the browser untrusted even when an orchestrator gives all three containers one
+network namespace. The gateway applies the same gate to forwarded address, host,
+protocol, and port headers, then erases the authenticator from parsed and raw
+header views before route dispatch.
 
 The concrete deployment (registry, orchestrator manifest, tunnel token, hostname, secrets) is declared in the **private infrastructure repository** and applied with whatever that repo uses. This public repo ships only the image and the runtime configuration above.
 

@@ -119,9 +119,13 @@ and the MCP route. `src/interfaces/http/mcp-route.ts` authenticates every
 `enableJsonResponse: true`) and a fresh MCP server for that request, and enables
 SDK Host/Origin DNS-rebinding protection. Hosted mode requires explicit
 `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, and an exact
-`CAPTATUM_TRUSTED_PROXY_CIDRS` socket-peer allowlist. Fastify ignores forwarded
-client addresses from any other peer, so OAuth rate-limit identities are neither
-globally collapsed behind the tunnel nor caller-selected. `GET`/`DELETE /mcp`
+`CAPTATUM_TRUSTED_PROXY_CIDRS` socket-peer allowlist plus the edge-injected
+`CAPTATUM_PROXY_AUTH_SECRET`. Fastify ignores forwarded client addresses unless
+both controls match, so OAuth rate-limit identities are neither globally
+collapsed behind the tunnel nor caller/co-tenant-selected. The gateway erases
+the authenticator from parsed and raw header views before route code runs and
+rejects unauthenticated forwarded address, host, protocol, and port headers.
+`GET`/`DELETE /mcp`
 return 405. Tool registration is in
 `src/interfaces/mcp/`; the tool schema has `additionalProperties: false`, and the
 default output is provider-conditional (`raw` with no provider, `summary` with one).

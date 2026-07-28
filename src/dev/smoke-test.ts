@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import type { JWK } from "jose";
@@ -94,6 +94,7 @@ const app = await createHttpApp({
   allowedHosts: [`127.0.0.1:${port}`],
   allowedOrigins: ["https://client.test"],
   trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+  proxyAuthSecret: randomBytes(32).toString("base64url"),
 });
 const token = await signAccessToken(
   { subject: "smoke-user", clientId: "smoke-client", scopes: ["fetch:read"] },

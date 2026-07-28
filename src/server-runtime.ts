@@ -226,6 +226,7 @@ function mcpSecurity(host: string, port: number) {
     allowedHosts: allowedHosts.length ? allowedHosts : localHosts(host, port),
     allowedOrigins,
     trustedProxyCidrs: config.mcp.trustedProxyCidrs(),
+    proxyAuthSecret: config.mcp.proxyAuthSecret(),
   };
 }
 

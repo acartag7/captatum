@@ -27,6 +27,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { createHttpApp } from "../src/interfaces/http/app.ts";
+import { TEST_PROXY_AUTH_SECRET } from "./support/proxy-auth.ts";
 
 const NOW_MS = Date.parse("2026-07-10T12:00:00.000Z");
 const ISSUER = "https://captatum.test";
@@ -117,6 +118,7 @@ async function setup() {
     captatum, flavor: "hosted", bridge, authorizer, identity: stubIdentity, clock, audit,
     allowedHosts: [HOST], allowedOrigins: [ORIGIN],
     trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+    proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
   });
   return { app, oauthConfig, audit };
 }

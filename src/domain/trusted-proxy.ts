@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 
 const MAX_TRUSTED_PROXIES = 32;
+const PROXY_SECRET = /^[A-Za-z0-9_-]{43}$/;
 
 /** Parse the hosted reverse-proxy trust boundary as a closed IP/CIDR allowlist. */
 export function parseTrustedProxyCidrs(raw: string): string[] {
@@ -36,6 +37,16 @@ export function parseTrustedProxyCidrs(raw: string): string[] {
     unique.add(entry);
   }
   return [...unique];
+}
+
+/** Parse exactly 32 random bytes encoded as unpadded base64url. */
+export function parseProxyAuthSecret(raw: string): string {
+  if (!PROXY_SECRET.test(raw)) {
+    throw new Error(
+      "CAPTATUM_PROXY_AUTH_SECRET must be exactly 32 random bytes encoded as 43 base64url characters",
+    );
+  }
+  return raw;
 }
 
 function invalidTrustedProxy(): Error {

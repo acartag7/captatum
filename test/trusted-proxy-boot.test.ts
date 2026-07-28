@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { JWK } from "jose";
 import { startHostedServer } from "../src/server.ts";
 
+const SAFE_TMP = realpathSync(tmpdir());
+
 test("missing trusted-proxy config aborts before creating SQLite state", async () => {
-  const parent = join(tmpdir(), `captatum-proxy-gate-${randomUUID()}`);
+  const parent = join(SAFE_TMP, `captatum-proxy-gate-${randomUUID()}`);
   const file = join(parent, "auth.sqlite");
   const restore = installHostedEnvWithoutProxy(file);
   try {
@@ -26,7 +28,25 @@ test("missing trusted-proxy config aborts before creating SQLite state", async (
   }
 });
 
-function installHostedEnvWithoutProxy(file: string): () => void {
+test("missing proxy authenticator aborts before creating SQLite state", async () => {
+  const parent = join(SAFE_TMP, `captatum-proxy-secret-${randomUUID()}`);
+  const file = join(parent, "auth.sqlite");
+  const restore = installHostedEnvWithoutProxy(file, "secret");
+  try {
+    await assert.rejects(
+      startHostedServer({ host: "127.0.0.1", port: 0, log: () => {} }),
+      /CAPTATUM_PROXY_AUTH_SECRET/,
+    );
+    assert.equal(existsSync(parent), false);
+  } finally {
+    restore();
+  }
+});
+
+function installHostedEnvWithoutProxy(
+  file: string,
+  missing: "cidrs" | "secret" = "cidrs",
+): () => void {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const values: Record<string, string> = {
     CAPTATUM_FLAVOR: "hosted",
@@ -44,6 +64,8 @@ function installHostedEnvWithoutProxy(file: string): () => void {
     OAUTH_REDIRECT_ALLOWLIST: "https://client.test/callback",
     MCP_ALLOWED_HOSTS: "captatum.test",
     MCP_ALLOWED_ORIGINS: "https://client.test",
+    CAPTATUM_TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128",
+    CAPTATUM_PROXY_AUTH_SECRET: randomBytes(32).toString("base64url"),
     CF_ACCESS_ENABLED: "true",
     CF_ACCESS_AUDIENCE: "test-audience",
     CF_ACCESS_CERTS_URL:
@@ -51,7 +73,9 @@ function installHostedEnvWithoutProxy(file: string): () => void {
     CF_ACCESS_ISSUER: "https://team.cloudflareaccess.com",
   };
   const cleared = [
-    "CAPTATUM_TRUSTED_PROXY_CIDRS",
+    missing === "cidrs"
+      ? "CAPTATUM_TRUSTED_PROXY_CIDRS"
+      : "CAPTATUM_PROXY_AUTH_SECRET",
     "TIDB_HOST",
     "TIDB_PORT",
     "TIDB_DATABASE",
@@ -61,8 +85,8 @@ function installHostedEnvWithoutProxy(file: string): () => void {
   ];
   const names = [...Object.keys(values), ...cleared];
   const previous = new Map(names.map((name) => [name, process.env[name]]));
-  for (const name of cleared) delete process.env[name];
   Object.assign(process.env, values);
+  for (const name of cleared) delete process.env[name];
   return () => {
     for (const [name, value] of previous) {
       if (value === undefined) delete process.env[name];

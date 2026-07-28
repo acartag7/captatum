@@ -9,6 +9,7 @@ import { runMachineClientCli } from "../src/machine-client.ts";
 import {
   writeAndFlush,
   type CliWritable,
+  type EventedCliWritable,
 } from "../src/machine-client-stream.ts";
 
 const SAFE_TMP = realpathSync(tmpdir());
@@ -26,7 +27,7 @@ test("stdout close before callback settles and disables the exact committed clie
     runMachineClientCli(["provision", "close-before-callback", "fetch:read"], {
       env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
       stdout: closing as unknown as CliWritable,
-      stderr: { write() { return true; } },
+      stderr: { completion: "synchronous", write() { return true; } },
     }),
     new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 1000)),
   ]);
@@ -36,8 +37,8 @@ test("stdout close before callback settles and disables the exact committed clie
   assert.equal(
     await runMachineClientCli(["list"], {
       env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
-      stdout: { write(chunk) { listed += chunk; return true; } },
-      stderr: { write() { return true; } },
+      stdout: { completion: "synchronous", write(chunk) { listed += chunk; return true; } },
+      stderr: { completion: "synchronous", write() { return true; } },
     }),
     0,
   );
@@ -77,7 +78,8 @@ test("writeAndFlush settles once across callback/error/close orderings", async (
   await assert.rejects(writeAndFlush(callbackError, "bad"), /callback error/);
 
   const callbackOnly: CliWritable = {
-    write(_chunk, callback) {
+    completion: "callback",
+    write(_chunk, callback = () => {}) {
       setImmediate(() => callback?.(new Error("callback-only error")));
       return true;
     },
@@ -85,6 +87,64 @@ test("writeAndFlush settles once across callback/error/close orderings", async (
   await assert.rejects(
     writeAndFlush(callbackOnly, "bad"),
     /callback-only error/,
+  );
+
+  const restCallback: CliWritable = {
+    completion: "callback",
+    write(_chunk, ...callbacks) {
+      setImmediate(() => callbacks[0]?.(new Error("rest callback error")));
+      return true;
+    },
+  };
+  await assert.rejects(
+    writeAndFlush(restCallback, "bad"),
+    /rest callback error/,
+  );
+
+  const backpressured: CliWritable = {
+    completion: "callback",
+    write(_chunk, callback) {
+      setImmediate(() => callback());
+      return false;
+    },
+  };
+  await writeAndFlush(backpressured, "delivered");
+});
+
+test("default-parameter callback failure compensates a committed credential", async (t) => {
+  const dir = mkdtempSync(join(SAFE_TMP, "captatum-cli-callback-"));
+  const file = join(dir, "auth.sqlite");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const failed: CliWritable = {
+    completion: "callback",
+    write(_chunk, callback = () => {}) {
+      setImmediate(() => callback(new Error("late callback failure")));
+      return true;
+    },
+  };
+  assert.equal(
+    await runMachineClientCli(["provision", "callback-failure", "fetch:read"], {
+      env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
+      stdout: failed,
+      stderr: { completion: "synchronous", write() { return true; } },
+    }),
+    1,
+  );
+  let listed = "";
+  assert.equal(
+    await runMachineClientCli(["list"], {
+      env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
+      stdout: {
+        completion: "synchronous",
+        write(chunk) { listed += chunk; return true; },
+      },
+      stderr: { completion: "synchronous", write() { return true; } },
+    }),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(listed) as Array<{ status: string }>)[0]?.status,
+    "disabled",
   );
 });
 
@@ -101,7 +161,7 @@ test("lost stderr diagnostics do not invalidate a delivered credential and durab
   assert.equal(
     await runMachineClientCli(["provision", "stderr-close", "fetch:read"], {
       env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
-      stdout: { write(chunk) { stdout += chunk; return true; } },
+      stdout: { completion: "synchronous", write(chunk) { stdout += chunk; return true; } },
       stderr: closingStderr as unknown as CliWritable,
     }),
     0,
@@ -116,8 +176,8 @@ test("lost stderr diagnostics do not invalidate a delivered credential and durab
   assert.equal(
     await runMachineClientCli(["list"], {
       env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: file },
-      stdout: { write(chunk) { listed += chunk; return true; } },
-      stderr: { write() { return true; } },
+      stdout: { completion: "synchronous", write(chunk) { listed += chunk; return true; } },
+      stderr: { completion: "synchronous", write() { return true; } },
     }),
     0,
   );
@@ -128,7 +188,7 @@ test("lost stderr diagnostics do not invalidate a delivered credential and durab
   );
 });
 
-class ScriptedWritable extends EventEmitter implements CliWritable {
+class ScriptedWritable extends EventEmitter implements EventedCliWritable {
   private readonly script: (
     stream: ScriptedWritable,
     callback?: (error?: Error | null) => void,

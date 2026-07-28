@@ -118,11 +118,14 @@ Load it: `launchctl load ~/Library/LaunchAgents/com.cloudflare.cloudflared.plist
 
 The required vars (all in `.env.example`): `CAPTATUM_FLAVOR=hosted`, the OAuth signing
 keys (from `scripts/gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), and
-`MCP_ALLOWED_HOSTS`/`MCP_ALLOWED_ORIGINS`. Set
-`CAPTATUM_TRUSTED_PROXY_CIDRS` to the exact socket peer that reaches the gateway;
-for the production same-Pod cloudflared topology it is
-`127.0.0.1/32,::1/128`. `docker compose` reads `../.env` relative to `deploy/`.
-The SQLite store + browser sidecar need no extra config (defaults).
+`MCP_ALLOWED_HOSTS`/`MCP_ALLOWED_ORIGINS`. Generate
+`CAPTATUM_PROXY_AUTH_SECRET` as described in `deploy/README.md` and configure the
+hostname-scoped Cloudflare rule to **Set static** `X-Captatum-Proxy-Auth` to the
+same value. Docker Compose overrides `CAPTATUM_TRUSTED_PROXY_CIDRS` with its
+pinned bridge gateway (`172.29.255.249/32`); do not replace it with loopback,
+because host-published traffic does not arrive as container loopback.
+`docker compose` reads `../.env` relative to `deploy/`. The SQLite store +
+browser sidecar need no extra config (defaults).
 
 ### Cutover from an existing managed deployment
 
