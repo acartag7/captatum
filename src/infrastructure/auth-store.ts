@@ -39,27 +39,37 @@ const LEGACY_TABLES_IN_DELETE_ORDER = [
   "oauth_refresh_tokens",
   "oauth_refresh_token_families",
 ] as const;
-const TIDB_ENV_NAMES = [
-  "TIDB_HOST",
-  "TIDB_PORT",
-  "TIDB_DATABASE",
-  "TIDB_USER",
-  "TIDB_PASSWORD",
-  "TIDB_SSL_CA",
-] as const;
+const INERT_LEGACY_TIDB_DEFAULTS = {
+  TIDB_PORT: "4000",
+  TIDB_DATABASE: "captatum",
+  TIDB_USER: "captatum_rw",
+} as const;
+const TIDB_CREDENTIAL_ENV_NAMES = ["TIDB_PASSWORD", "TIDB_SSL_CA"] as const;
 
 /** Resolve and validate the SQLite-only v0.20 backend before any side effect. */
 export function resolveHostedStoreConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): HostedStoreConfig {
-  if (TIDB_ENV_NAMES.some((name) => optionalEnv(env, name) !== undefined)) {
-    throw new Error(
-      "TiDB auth storage is deferred in v0.20; unset every TIDB_* value and use single-replica SQLite",
-    );
-  }
+  assertSqliteOnlyTiDbConfig(env);
   const configuredPath = optionalEnv(env, "CAPTATUM_SQLITE_PATH")
     ?? "./data/captatum.sqlite";
   return { backend: "sqlite", ...resolveSqliteStorePaths(configuredPath) };
+}
+
+function assertSqliteOnlyTiDbConfig(env: NodeJS.ProcessEnv): void {
+  const selected = optionalEnv(env, "TIDB_HOST") !== undefined;
+  const nonLegacyDefault = Object.entries(INERT_LEGACY_TIDB_DEFAULTS)
+    .some(([name, expected]) => {
+      const value = optionalEnv(env, name);
+      return value !== undefined && value !== expected;
+    });
+  const parkedCredential = TIDB_CREDENTIAL_ENV_NAMES
+    .some((name) => optionalEnv(env, name) !== undefined);
+  if (selected || nonLegacyDefault || parkedCredential) {
+    throw new Error(
+      "TiDB auth storage is deferred in v0.20; unset TIDB_HOST, credentials, CA, and non-default TIDB_* values",
+    );
+  }
 }
 
 /** Open OAuth + client stores after the full boot config and path policy passed. */

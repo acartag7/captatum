@@ -884,9 +884,14 @@ and Captatum's deployment `ClientStore` adapter:
   atomic no-follow open, so these checks do not claim absolute TOCTOU prevention:
   a same-UID process able to mutate the private directory is already inside the
   OAuth-key trust boundary. No external database server is needed.
-- **TiDB/multi-replica is deferred for the v0.20.0 auth transition.** Any
-  `TIDB_HOST` value, including a partially configured TiDB environment, is a
-  pre-side-effect boot rejection. Reintroduction requires an explicit
+- **TiDB/multi-replica is deferred for the v0.20.0 auth transition.**
+  `TIDB_HOST` remains the sole backend selector; any non-empty value is a
+  pre-side-effect boot rejection. With no host, the historical inert template
+  defaults `TIDB_PORT=4000`, `TIDB_DATABASE=captatum`, and
+  `TIDB_USER=captatum_rw` are accepted and ignored so existing SQLite
+  deployments upgrade without editing old environment files. Any other
+  non-empty TiDB value, including credentials or CA material without a host,
+  is rejected as a partial configuration. Reintroduction requires an explicit
   SQLite-to-TiDB transfer, a distributed CAS/serialization implementation for
   every client mutation, the same bounded-retention semantics, and real
   multi-replica restart/rotation tests.

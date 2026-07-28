@@ -1,6 +1,7 @@
 // Regression coverage for src/infrastructure/auth-store.ts — the hosted OAuth-state store
-// factory. v0.20 rejects every TiDB selector before side effects; SQLite private-state
-// creation/modes, independent files, and the one-time migration are exercised here.
+// factory. v0.20 rejects TiDB selection before side effects while preserving the
+// old SQLite template's inert defaults; private-state creation/modes, independent
+// files, and the one-time migration are exercised here.
 // (Non-frozen: this guards implementation details.)
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -49,9 +50,24 @@ async function withEnv(env: Record<string, string | undefined>, fn: () => Promis
   }
 }
 
-test("v0.20 rejects every non-empty TiDB selector before opening state", async () => {
+test("v0.20 rejects a selected TiDB backend before opening state", async () => {
   await withEnv({ ...TIDB_ENV, TIDB_SSL_CA: "ca" }, async () => {
     assert.throws(() => resolveHostedStoreConfig(), /TiDB auth storage is deferred/);
+  });
+});
+
+test("legacy TiDB defaults remain inert when TIDB_HOST is empty", () => {
+  assert.deepEqual(resolveHostedStoreConfig({
+    TIDB_HOST: "",
+    TIDB_PORT: "4000",
+    TIDB_DATABASE: "captatum",
+    TIDB_USER: "captatum_rw",
+    TIDB_PASSWORD: "",
+    TIDB_SSL_CA: "",
+    CAPTATUM_SQLITE_PATH: ":memory:",
+  }), {
+    backend: "sqlite", stateDirectory: ":memory:",
+    authFilename: ":memory:", clientFilename: ":memory:",
   });
 });
 
@@ -60,7 +76,15 @@ test("a parked TiDB credential without TIDB_HOST still fails closed", () => {
     TIDB_HOST: "",
     TIDB_PASSWORD: randomBytes(16).toString("hex"),
     CAPTATUM_SQLITE_PATH: "/must/not/be/created",
-  }), /unset every TIDB_/);
+  }), /unset TIDB_HOST, credentials, CA/);
+});
+
+test("a non-default dormant TiDB value fails closed", () => {
+  assert.throws(() => resolveHostedStoreConfig({
+    TIDB_HOST: "",
+    TIDB_PORT: "4001",
+    CAPTATUM_SQLITE_PATH: ":memory:",
+  }), /non-default TIDB_/);
 });
 
 test("SQLite defaults to two persistent 0600 files with independent locks and restart persistence", async () => {

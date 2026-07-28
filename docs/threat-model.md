@@ -37,7 +37,10 @@ the contract reference; this file is the security reasoning.
   state directory is `0700`, and both regular files are `0600`; the directory
   and files must be owned by the running effective UID/GID. Separate owned files
   prevent cross-store writer locks. The v0.20.0 release is one hosted replica;
-  any TiDB selection is a pre-side-effect boot failure.
+  a non-empty `TIDB_HOST` or any non-legacy partial TiDB configuration is a
+  pre-side-effect boot failure. The exact dormant defaults from the previous
+  SQLite `.env.example` (`4000`, `captatum`, `captatum_rw`) are inert without a
+  host so an existing SQLite deployment does not become an accidental outage.
 - The **local-binary flavor has no network trust boundary** — it is single-user /
   single-agent only and runs without auth. It must never be exposed on a network.
   Its entrypoint is the stdio bridge (`src/interfaces/mcp/stdio-bridge.ts`), which
