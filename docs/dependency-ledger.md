@@ -157,11 +157,13 @@ same canonical URL representation. This is therefore a time-bounded
 non-reachability disposition, not a claim that the vulnerable package versions
 are acceptable indefinitely.
 
-The exception expires when `find-my-way@9.7.0` clears the age gate. Do not enable
+The `fast-uri` exception expires at `2026-08-03T07:42:54.497Z`; upgrade it in
+the first patch release on or after that instant, rerun the production audit,
+and remove its exception. The `find-my-way` exception separately expires at
+`2026-08-05T16:45:28.799Z`; upgrade it in the first patch release on or after
+that instant, rerun the audit, and remove the remaining exception. Do not enable
 the affected optional transport or introduce the affected URI resolver at a
-trust boundary while this disposition is active. Upgrade both transitive
-packages in the first patch release on or after `2026-08-05T16:45:28.799Z`,
-rerun the full production audit, and remove this exception.
+trust boundary while either disposition is active.
 
 ## Browser workload image (Dockerfile.browser)
 
