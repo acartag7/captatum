@@ -149,10 +149,11 @@ the contract reference; this file is the security reasoning.
   no-secret, no-capability relay in that same browser boundary exposes fixed Pod
   port 9223 only to forward into Chromium's loopback-only TCP/9222 listener; it
   has no configurable target and caps concurrent connections. The
-  gateway accepts only the fixed production
-  `captatum-browser.captatum.svc.cluster.local:9222` origin; parsing and
-  allowlisting happen before any hosted state side effect. Loopback CDP is
-  rejected because it recreates the shared-network-namespace attack. This
+  gateway accepts only an HTTP/9222 Kubernetes Service origin with exact
+  `<service>.<namespace>.svc.cluster.local` DNS-1123 shape; parsing and
+  allowlisting happen before any hosted state side effect. The deployer owns the
+  concrete Service name. Loopback CDP is rejected because it recreates the
+  shared-network-namespace attack. This
   prevents both packet sniffing and sibling port rebinding during a gateway restart.
   The cluster node/kernel and principals allowed to mutate the Pod, its labels,
   or ingress NetworkPolicy remain inside the operator trust boundary. Either way the

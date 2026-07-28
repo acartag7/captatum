@@ -5,9 +5,8 @@ import {
   parseTrustedProxyCidrs,
 } from "./domain/trusted-proxy.ts";
 
-const ALLOWED_CDP_ORIGINS = new Set([
-  "http://captatum-browser.captatum.svc.cluster.local:9222",
-]);
+const DNS_1123_LABEL =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const config = {
   source: {
@@ -158,14 +157,26 @@ export function parseCdpEndpoint(raw: string): string | undefined {
   if (
     parsed.username !== "" ||
     parsed.password !== "" ||
+    parsed.protocol !== "http:" ||
+    parsed.port !== "9222" ||
     parsed.pathname !== "/" ||
     parsed.search !== "" ||
     parsed.hash !== "" ||
-    !ALLOWED_CDP_ORIGINS.has(parsed.origin)
+    !isKubernetesServiceHost(parsed.hostname)
   ) {
     throw new Error("CAPTATUM_BROWSER_CDP_ENDPOINT is not an allowed CDP origin");
   }
   return parsed.origin;
+}
+
+function isKubernetesServiceHost(hostname: string): boolean {
+  const labels = hostname.split(".");
+  return labels.length === 5 &&
+    DNS_1123_LABEL.test(labels[0] ?? "") &&
+    DNS_1123_LABEL.test(labels[1] ?? "") &&
+    labels[2] === "svc" &&
+    labels[3] === "cluster" &&
+    labels[4] === "local";
 }
 
 function envString(name: string, fallback: string): string {

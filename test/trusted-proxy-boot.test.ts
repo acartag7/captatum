@@ -47,7 +47,7 @@ test("invalid CDP origin aborts before creating SQLite state", async () => {
   const parent = join(SAFE_TMP, `captatum-cdp-gate-${randomUUID()}`);
   const file = join(parent, "auth.sqlite");
   const restore = installHostedEnv(file, undefined, {
-    CAPTATUM_BROWSER_CDP_ENDPOINT: "http://other-service.captatum.svc.cluster.local:9222",
+    CAPTATUM_BROWSER_CDP_ENDPOINT: "http://browser.example.com:9222",
   });
   try {
     await assert.rejects(

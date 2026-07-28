@@ -60,11 +60,15 @@ port and receive the tunnel's authenticated traffic. The supported production
 shape gives the browser its own Pod/network namespace, permits CDP ingress only
 from the gateway, and installs a default-deny IPv4/IPv6 OUTPUT firewall before
 Chromium starts. The browser's page requests still route through the gateway's
-guarded fetcher. The exact CDP allowlist accepts only the production Kubernetes
-service origin; loopback and arbitrary service endpoints fail boot before state
-is opened.
+guarded fetcher. The CDP allowlist accepts only an exact Kubernetes Service
+origin shaped `http://<service>.<namespace>.svc.cluster.local:9222`; the deployer
+owns the concrete service and namespace labels. Loopback and non-service
+endpoints fail boot before state is opened.
 
-The concrete deployment (registry, orchestrator manifest, tunnel token, hostname, secrets) is declared in the **private infrastructure repository** and applied with whatever that repo uses. This public repo ships only the image and the runtime configuration above.
+Concrete registry, orchestrator, tunnel, hostname, and secret configuration is
+deployer-owned. This public repo ships the images and enforces the runtime
+boundary above; it intentionally does not duplicate environment-specific
+manifests.
 
 ## Deploy shape
 

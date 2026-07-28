@@ -5,6 +5,7 @@ import { parseCdpEndpoint } from "../src/config.ts";
 test("CDP endpoint accepts only the frozen browser origins", () => {
   const allowed = [
     "http://captatum-browser.captatum.svc.cluster.local:9222",
+    "http://render-browser.other-namespace.svc.cluster.local:9222",
   ];
   for (const origin of allowed) {
     assert.equal(parseCdpEndpoint(` ${origin}/ `), origin);
@@ -25,9 +26,13 @@ test("CDP endpoint rejects every non-allowlisted URL component", () => {
     "http://localhost:9222/json/version",
     "http://localhost:9222/?query=1",
     "http://localhost:9222/#fragment",
-    "http://other-service.captatum.svc.cluster.local:9222",
-    "http://captatum-browser.other.svc.cluster.local:9222",
+    "https://captatum-browser.captatum.svc.cluster.local:9222",
     "http://captatum-browser.captatum.svc.cluster.local:9223",
+    "http://captatum-browser.svc.cluster.local:9222",
+    "http://captatum-browser.captatum.svc.example.local:9222",
+    "http://-browser.captatum.svc.cluster.local:9222",
+    "http://browser_name.captatum.svc.cluster.local:9222",
+    "http://browser.example.com:9222",
   ];
   for (const endpoint of rejected) {
     assert.throws(
