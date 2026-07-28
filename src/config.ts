@@ -6,9 +6,6 @@ import {
 } from "./domain/trusted-proxy.ts";
 
 const ALLOWED_CDP_ORIGINS = new Set([
-  "http://localhost:9222",
-  "http://127.0.0.1:9222",
-  "http://[::1]:9222",
   "http://captatum-browser.captatum.svc.cluster.local:9222",
 ]);
 
@@ -104,7 +101,7 @@ export const config = {
     cdpEndpoint: () => parseCdpEndpoint(
       envString("CAPTATUM_BROWSER_CDP_ENDPOINT", ""),
     ),
-    /** Chromium sandbox for in-process launch (default true — threat model: never --no-sandbox). Only relevant when no sidecar is configured. */
+    /** Chromium sandbox for in-process launch (default true — threat model: never --no-sandbox). Only relevant when no CDP workload is configured. */
     chromiumSandbox: () => envString("CAPTATUM_BROWSER_INPROCESS_SANDBOX", "true") === "true",
     /** DOS-2: max concurrent Tier-3 renders. Chromium is the expensive resource, so
      * bound it independently of the global admission cap (default 2). */

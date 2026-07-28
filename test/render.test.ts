@@ -468,19 +468,22 @@ test("renderer returns timeout and closes the browser on stalled navigation", as
   assert.equal(harness.browserClosed, true);
 });
 
-test("renderer connects to a CDP sidecar and does not close the shared browser", async () => {
+test("renderer connects to the CDP workload and does not close its shared browser", async () => {
   const harness = new BrowserHarness();
   const renderer = new PlaywrightRenderer({
     loadPlaywright: harness.load,
     guard: new FakeGuard({}),
-    cdpEndpoint: "http://localhost:9222",
+    cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
   });
   const result = await renderer.render(renderInput(new FakeFetcher()));
 
-  // Sidecar mode: connect over CDP (not launch), and never close the long-lived
+  // Workload mode: connect over CDP (not launch), and never close the long-lived
   // shared browser — only the per-render context+page.
   assert.equal(result.rendered, true);
-  assert.equal(harness.cdpEndpoint, "http://localhost:9222");
+  assert.equal(
+    harness.cdpEndpoint,
+    "http://captatum-browser.captatum.svc.cluster.local:9222",
+  );
   assert.equal(harness.launchCalled, false);
   assert.equal(harness.browserClosed, false);
 });
@@ -753,8 +756,8 @@ function fetchResult(html: string, finalUrl: string): FetcherResult {
   };
 }
 
-test("createRenderer degrades to render-unavailable for hosted flavor with no sidecar", async () => {
-  // Hosted never launches an in-process browser (threat model): no CDP sidecar =>
+test("createRenderer degrades to render-unavailable with no hosted browser workload", async () => {
+  // Hosted never launches an in-process browser (threat model): no CDP workload =>
   // render-unavailable, NOT an in-process launch (which would be render_error when
   // no browser binary is present, e.g. the published gateway image).
   const prevFlavor = process.env.CAPTATUM_FLAVOR;

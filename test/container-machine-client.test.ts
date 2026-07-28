@@ -24,7 +24,7 @@ test("container deployment uses the offline direct-node machine-client entrypoin
   assert.ok(readFileSync(join(ROOT, "src", "machine-client.ts"), "utf8").length > 0);
 });
 
-test("Docker tunnel peer is pinned and browser forwarding remains unauthenticated", () => {
+test("generic container deploys pin the tunnel peer and omit unsafe browser sharing", () => {
   for (const path of [
     ["deploy", "docker-compose.yml"],
     ["deploy", "ec2-user-data.sh"],
@@ -36,7 +36,10 @@ test("Docker tunnel peer is pinned and browser forwarding remains unauthenticate
     );
     assert.match(deploy, /subnet: "172\.29\.255\.248\/29"/);
     assert.match(deploy, /gateway: "172\.29\.255\.249"/);
-    assert.match(deploy, /network_mode: "service:gateway"/);
+    assert.doesNotMatch(deploy, /network_mode: "service:gateway"/);
+    assert.doesNotMatch(deploy, /CAPTATUM_BROWSER_CDP_ENDPOINT/);
+    assert.doesNotMatch(deploy, /^\s+browser:\s*$/m);
+    assert.doesNotMatch(deploy, /^\s+image:.*captatum-browser/m);
     assert.doesNotMatch(
       deploy,
       /CAPTATUM_TRUSTED_PROXY_CIDRS: "127\.0\.0\.1/,

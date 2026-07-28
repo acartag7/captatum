@@ -74,12 +74,15 @@ fetches — those egress directly from the residential host, which is the whole 
 - **No new SSRF surface.** The `FetcherPort` rebinding-proof guard still pins every
   outbound connection; only the source IP changes.
 - **No paid proxy.** The residential IP is the host's own ISP — free.
-- **The browser sidecar** (Chromium) runs on the same host (Docker sidecar or
-  in-process), so Tier-3 renders also egress residential.
+- **The browser workload** runs on the same physical host but in a separate
+  Pod/network namespace. It has no direct page egress: its OUTPUT firewall permits
+  only loopback and established replies, while every page request is fulfilled
+  through the gateway's guarded fetcher. The guarded request therefore still
+  egresses through the residential host.
 
-See **[`deploy/mac-mini.md`](../deploy/mac-mini.md)** for the step-by-step (Docker +
-`cloudflared` + Cloudflare Access). The `docker-compose.yml` base is the same one used
-for EC2/any Docker host.
+See **[`deploy/mac-mini.md`](../deploy/mac-mini.md)** for the gateway-only Docker +
+`cloudflared` + Cloudflare Access path. The production Tier-3 topology is the
+isolated Kubernetes browser workload described in `docs/deploy.md`.
 
 ### Verification before cutover
 
@@ -103,7 +106,7 @@ A typical home ISP IP passes.
 | **Availability** | HA, multi-AZ, self-healing | single-point (one host; power/ISP outages) |
 | **Cost** | pay-per-use | free (host you own) |
 | **Ops** | managed (ECS, auto-restart) | you keep it on + restart on failure |
-| **SSRF/security posture** | identical (`FetcherPort` guard; browser in a sidecar container) | identical |
+| **SSRF/security posture** | `FetcherPort` guard; Tier-3 needs an isolated browser workload | same guard; production Tier-3 adds a separate browser namespace and default-deny OUTPUT firewall |
 | **Coverage** | loses Notion/cppreference/npmjs/Cursor | wins them |
 
 For a personal / low-traffic product, the residential host's coverage win outweighs the
@@ -126,7 +129,7 @@ does not change.
 ## Reference
 
 - `deploy/mac-mini.md` — the residential-host deploy guide.
-- `deploy/docker-compose.yml` — gateway + browser sidecar + SQLite (the common base).
+- `deploy/docker-compose.yml` — gateway + SQLite (the generic Tier-3-disabled base).
 - `docs/threat-model.md` — "Deployment egress" (this finding in the threat model).
 - Issue #41 Half B — the 6-agent evasion study that established the datacenter-ASN wall
   (browser-layer bypass is not viable; the IP is the lever).

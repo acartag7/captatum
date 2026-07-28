@@ -26,9 +26,9 @@ import type {
 export interface PlaywrightRendererDeps {
   loadPlaywright?: () => Promise<PlaywrightModule>;
   guard?: BrowserUrlGuard;
-  /** CDP endpoint for sidecar mode (e.g. "http://localhost:9222"). If set, the renderer connects to a long-lived Chromium in its own container instead of launching one in-process. */
+  /** Allowlisted CDP endpoint for the isolated hosted browser workload. If set, the renderer connects to long-lived Chromium instead of launching one in-process. */
   cdpEndpoint?: string;
-  /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is only for a sidecar-less transitional deploy. */
+  /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is transitional local-only behavior. */
   chromiumSandbox?: boolean;
   /** Post-load settle: networkidle cap, content-stability min dwell, stable threshold (ms).
    *  The content-aware settle catches setTimeout/hydration content networkidle misses. Defaults 5000 / 1500 / 400. */
@@ -133,7 +133,7 @@ export class PlaywrightRenderer implements RenderPort {
       if (onSignalAbort && input.signal) input.signal.removeEventListener("abort", onSignalAbort);
       await closeQuietly(page);
       await closeQuietly(context);
-      // Only close a browser we launched; the CDP sidecar is shared + long-lived.
+      // Only close a browser we launched; the remote CDP browser is shared + long-lived.
       if (ownsBrowser) await closeQuietly(browser);
     }
   }

@@ -136,22 +136,23 @@ lockfile. Do not add a new direct dependency or bump an existing pin without
 rechecking it here against the registry and the 15-day rule, and resolving or
 documenting any `pnpm audit --prod` finding.
 
-## Browser sidecar image (Dockerfile.browser)
+## Browser workload image (Dockerfile.browser)
 
-The Tier-3 sidecar runs Chromium in its own container; the gateway connects over
-CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`). The sidecar image MUST ship a Chromium
-whose major version matches the gateway's `playwright` pin above (`1.61.0` →
-Chromium 149), or the CDP connection can break.
+The Tier-3 browser workload runs Chromium in its own Pod/network namespace; the
+gateway connects over CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`). The image MUST ship
+a Chromium whose major version matches the gateway's `playwright` pin above
+(`1.61.0` → Chromium 149), or the CDP connection can break.
 
 - Image: `mcr.microsoft.com/playwright:v1.61.0-noble` (matches the npm pin; reuse
   Microsoft's signed Playwright image rather than building Chromium from source).
 - Re-check the image tag's publish date against the 15-day rule before pinning a
   newer one; record it here. `--no-sandbox` runs inside this container only
-  (container-isolated) — never in-process with the gateway (see threat-model.md).
+  inside the isolated, firewalled browser workload only — never in-process with
+  or network-namespace-shared with the gateway (see threat-model.md).
 
 ## Multi-arch GHCR images (release.yml)
 
-Both images (gateway `Dockerfile` + sidecar `Dockerfile.browser`) build
+Both images (gateway `Dockerfile` + browser `Dockerfile.browser`) build
 **linux/amd64 + linux/arm64** so the arm64 Mac mini k3s deploy pulls
 `ghcr.io/acartag7/captatum:latest` natively instead of building locally. arm64
 is cross-built via QEMU (`docker/setup-qemu-action`) on the amd64 runner. Both

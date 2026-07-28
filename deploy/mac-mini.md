@@ -1,7 +1,9 @@
-# Mac Mini deploy (cloudflared + Docker)
+# Mac Mini gateway deploy (cloudflared + Docker)
 
-Run the gateway + browser sidecar in Docker on a Mac Mini, with a Cloudflare Tunnel
-exposing it. Good for an always-on self-host on hardware you already own.
+Run the gateway in Docker on a Mac Mini, with a Cloudflare Tunnel exposing it.
+This generic Compose path is gateway-only and reports `render-unavailable` for
+Tier-3. The production Mac mini k3s deployment uses the separately reviewed
+browser Pod and firewall topology.
 
 ## Why a Mac mini (residential egress)?
 
@@ -65,7 +67,8 @@ docker compose -f deploy/docker-compose.yml logs -f gateway
 ```
 
 The gateway binds `127.0.0.1:3000`; `cloudflared` reaches it locally. The SQLite
-file persists in the `captatum-data` volume.
+file persists in the `captatum-data` volume. The Compose stack intentionally
+starts no browser.
 
 ## 4) Keep it running
 
@@ -124,8 +127,8 @@ hostname-scoped Cloudflare rule to **Set static** `X-Captatum-Proxy-Auth` to the
 same value. Docker Compose overrides `CAPTATUM_TRUSTED_PROXY_CIDRS` with its
 pinned bridge gateway (`172.29.255.249/32`); do not replace it with loopback,
 because host-published traffic does not arrive as container loopback.
-`docker compose` reads `../.env` relative to `deploy/`. The SQLite store +
-browser sidecar need no extra config (defaults).
+`docker compose` reads `../.env` relative to `deploy/`. The SQLite store needs no
+extra config. Do not set `CAPTATUM_BROWSER_CDP_ENDPOINT` in this generic path.
 
 ### Cutover from an existing managed deployment
 

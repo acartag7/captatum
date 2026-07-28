@@ -12,18 +12,17 @@ The common setup is intentionally dependency-light:
   v0.20.x supports exactly one gateway replica; any TiDB configuration is
   rejected at boot.
 - **Auth**: gateway OAuth **+ Cloudflare Access** in front of the consent screen.
-- **Tier-3 rendering**: a separate **browser sidecar** container (blast-radius
-  separation — a browser compromise never reaches OAuth keys / the SQLite files).
+- **Tier-3 rendering**: intentionally absent from these generic templates. The
+  supported production shape uses a separate browser Pod/network namespace with
+  default-deny outbound firewall rules; see `docs/deploy.md`.
 
 ```
                  Cloudflare Access (consent identity)
                           │  Cloudflare Tunnel
                           ▼
    ┌──────────────────────────────────────────────┐
-   │ captatum gateway  (OAuth keys, SQLite files)  │  127.0.0.1:3000
-   │       │ CDP                                    │
-   │       ▼                                        │
-   │ captatum-browser (Chromium, no secrets)       │
+   │ captatum gateway  (OAuth keys, SQLite files) │  127.0.0.1:3000
+   │ Tier-3 disabled in the generic templates     │
    └──────────────────────────────────────────────┘
 ```
 
@@ -57,9 +56,10 @@ Set the deploy-specific values:
   hostname that uses **Set static** (overwrite) for
   `X-Captatum-Proxy-Auth` with the same value. The gateway removes the header
   from parsed and raw header views before route dispatch. A missing/wrong value
-  rejects forwarded address, host, protocol, and port headers, so a browser
-  sidecar sharing the socket peer cannot select rate-limit or framework
-  authority.
+  rejects forwarded address, host, protocol, and port headers, so an untrusted
+  co-tenant sharing the socket peer cannot select rate-limit or framework
+  authority. This protects forwarding metadata; it does not make a shared
+  browser/gateway network namespace safe.
 - `CAPTATUM_SQLITE_PATH` — the OAuth-state SQLite path. Its parent is Captatum's private state directory and must be owned by the gateway user at mode `0700`; both database files must be `0600`. Captatum derives the client store as `<path>.clients`, so both land on the same mounted volume without sharing a database file or write lock. The image prepares `/data` as `node:node`/`0700`, including fresh named-volume initialization; for an existing bind mount, run `chown <gateway-uid>:<gateway-gid> /data && chmod 0700 /data` on the host before boot. Set the path to `/data/captatum.sqlite` as the templates do.
 
 ## 2. Cloudflare (Access + Tunnel)
@@ -80,9 +80,9 @@ The hosted flavor **requires Cloudflare Access** (it fail-closes at boot without
 
 | Target | Guide | Notes |
 | --- | --- | --- |
-| **Railway** | [`railway.md`](./railway.md) + `railway.toml` | One gateway service from the published image + a `/data` volume. **Tier-3 needs the browser sidecar in the gateway's network namespace** (CDP is loopback-only) — so on Railway run gateway + sidecar in ONE service, not a separate one (a second service can't reach `127.0.0.1:9222`). |
-| **EC2** | [`ec2-user-data.sh`](./ec2-user-data.sh) | cloud-init: installs Docker and runs `docker compose up -d` with the gateway + sidecar. |
-| **Mac Mini** | [`mac-mini.md`](./mac-mini.md) | `cloudflared` + `docker compose` on macOS. |
+| **Railway** | [`railway.md`](./railway.md) + `railway.toml` | One gateway service from the published image + a `/data` volume. Tier-3 is disabled. |
+| **EC2** | [`ec2-user-data.sh`](./ec2-user-data.sh) | cloud-init: installs Docker and runs the gateway-only Compose template. Tier-3 is disabled. |
+| **Mac Mini** | [`mac-mini.md`](./mac-mini.md) | `cloudflared` + gateway-only Docker Compose on macOS. Tier-3 is disabled in this generic path; the private production k3s topology supplies the isolated browser workload. |
 
 All three use the same `docker-compose.yml` and the same `.env`, so the setup is
 identical apart from how the host is provisioned and how `cloudflared` is run.
@@ -145,7 +145,7 @@ go to stdout as JSON: `docker compose -f deploy/docker-compose.yml logs -f gatew
 | Boot aborts "Hosted requires …" | A required secret is missing: `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (`gen-oauth-keys.ts`), all four `CF_ACCESS_*`, `MCP_ALLOWED_HOSTS` + `MCP_ALLOWED_ORIGINS`, the exact `CAPTATUM_TRUSTED_PROXY_CIDRS` peer allowlist, or `CAPTATUM_PROXY_AUTH_SECRET`. |
 | Public requests return `invalid_proxy_auth` | The Cloudflare hostname rule is missing/mismatched. It must **Set static** `X-Captatum-Proxy-Auth` to the same secret as the gateway; do not expose or log the value. |
 | `summary` returns raw (`transform.provider: "none"`) | No transform provider: set `OPENROUTER_API_KEY` (or `OLLAMA_BASE_URL`). **Or** the caller's token lacks the `fetch:transform` scope (default `fetch:read` only allows `raw`). |
-| Tier-3 `render-unavailable` | The gateway can't reach the browser sidecar. `CAPTATUM_BROWSER_CDP_ENDPOINT` must be `http://127.0.0.1:9222` and the sidecar must share the gateway's network namespace (`network_mode: service:gateway` in compose). |
+| Tier-3 `render-unavailable` | Expected for these gateway-only templates. Do not add a browser to the gateway namespace or set a loopback CDP endpoint. Tier-3 requires the reviewed isolated production topology in `docs/deploy.md`. |
 | `~/.env` not picked up | compose `env_file` is `../.env` (repo root), and `environment:` overrides it — set secrets in `.env`, flavor/host/CDP via compose. |
 
 ## Upgrading

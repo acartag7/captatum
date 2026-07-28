@@ -28,9 +28,12 @@ the contract reference; this file is the security reasoning.
   `X-Forwarded-*` authority (`For`, `Host`, `Proto`, and `Port`), `X-Real-IP`,
   and `CF-Connecting-IP`, and removes all of them on rejection. The production
   browser runs in a separate Pod/network namespace from gateway + cloudflared,
-  receives no secret, has no direct CNI egress, and accepts CDP only from the
-  gateway Pod. It therefore cannot observe the proxy hop or bind gateway port
-  3000 during a container restart to recover the edge authenticator.
+  receives no secret, and accepts CDP only from the gateway Pod. A trusted init
+  container installs IPv4 and IPv6 default-drop OUTPUT rules inside that Pod
+  network namespace before browser startup, because the production kube-router
+  does not enforce external egress denial. The browser therefore cannot observe
+  the proxy hop, bind gateway port 3000 during a container restart, or originate
+  Internet traffic.
 - The DEFAULT hosted state is two local SQLite files (`node:sqlite`, no network):
   mcp-sso OAuth codes/tokens at `CAPTATUM_SQLITE_PATH`, and DCR/machine clients at
   the derived `<path>.clients`. The configured path's parent is the private Captatum
@@ -127,7 +130,7 @@ the contract reference; this file is the security reasoning.
   exempt, so a blocklisted vendor apex that IS the requested page (amplitude.com,
   hotjar.com, …) still loads and its own links survive the strip. WebSockets are closed;
   Service Workers are disabled; downloads are blocked; render-byte cap is
-  enforced; the browser runs with an empty environment. **Sandbox model: an
+  enforced; the browser receives no secret-bearing environment. **Sandbox model: an
   in-process launch keeps the OS sandbox ON (`chromiumSandbox` defaults true —
   `--no-sandbox` in-process is a release blocker). The hosted path instead runs
   Chromium in a separate browser workload connected over CDP
@@ -138,16 +141,21 @@ the contract reference; this file is the security reasoning.
   gateway degrades to `render-unavailable` rather than launching Chromium inside the
   OAuth-key blast radius. Production additionally places the browser in its own
   Pod/network namespace, runs it non-root with every Linux capability dropped,
-  denies browser egress, and permits CDP ingress only from the gateway Pod. A
+  and permits CDP ingress only from the gateway Pod. Before either
+  browser-boundary container starts, a digest-pinned trusted init container
+  flushes both Pod-netns OUTPUT chains, sets them default-drop, and allows only
+  loopback plus established replies. The untrusted containers receive no
+  `NET_ADMIN` capability, so they cannot relax those rules. A
   no-secret, no-capability relay in that same browser boundary exposes fixed Pod
   port 9223 only to forward into Chromium's loopback-only TCP/9222 listener; it
   has no configurable target and caps concurrent connections. The
-  gateway accepts only the exact loopback origins or the fixed production
+  gateway accepts only the fixed production
   `captatum-browser.captatum.svc.cluster.local:9222` origin; parsing and
-  allowlisting happen before any hosted state side effect. This prevents both
-  packet sniffing and the sibling port-rebinding attack during a gateway restart.
-  The cluster node/CNI and principals allowed to mutate NetworkPolicy or Pod
-  labels remain inside the operator trust boundary. Either way the
+  allowlisting happen before any hosted state side effect. Loopback CDP is
+  rejected because it recreates the shared-network-namespace attack. This
+  prevents both packet sniffing and sibling port rebinding during a gateway restart.
+  The cluster node/kernel and principals allowed to mutate the Pod, its labels,
+  or ingress NetworkPolicy remain inside the operator trust boundary. Either way the
   browser never runs in-process with `--no-sandbox` inside the gateway's blast
   radius. The `page.route` SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
@@ -401,11 +409,13 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
 - Tier-3 is the maximal SSRF surface. The in-browser controls are mandatory, not
   advisory; a Tier-3 path that drops any of them is a release blocker.
 - The production browser isolation depends on the Kubernetes Pod/network
-  namespace boundary and enforced NetworkPolicy. A principal that controls the
-  node, CNI, namespace workload labels, or policy objects is already inside the
-  deployment trust boundary. A compromised renderer may still forge rendered
-  page output, but it receives no gateway secret and cannot originate page
-  network egress; fetched content remains untrusted regardless.
+  namespace boundary, its Pod-netns firewall, and ingress NetworkPolicy. The
+  firewall is not the cluster's measured-broken egress NetworkPolicy path. A
+  principal that controls the node/kernel, namespace workload labels, or policy
+  objects is already inside the deployment trust boundary. A compromised
+  renderer may still forge rendered page output, but it receives no gateway
+  secret and cannot originate page network egress; fetched content remains
+  untrusted regardless.
 - **TIER3-POST — page-authored upstream egress (#111).** Tier-3 now forwards a
   first-party POST body (Notion/Jira hydrate via POST), which is untrusted page content
   egressed to a first-party endpoint. A compromised/XSSed page on victim.com could amplify

@@ -16,9 +16,10 @@ docker build -t captatum .
 docker buildx build --platform linux/arm64 -t <your-registry>/captatum:<tag> --push .
 ```
 
-The image runs `node --no-warnings src/server.ts` (hosted flavor). Tier-3
-(Playwright) ships module-only (no Chromium) by default; to enable render, use a
-browser-capable base image and unset `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`.
+The image runs `node --no-warnings src/server.ts` (hosted flavor). The gateway
+image deliberately contains no Chromium. Tier-3 requires the separate production
+browser workload described below; the generic Compose, EC2, and Railway templates
+leave it disabled.
 
 ## Runtime configuration
 
@@ -44,14 +45,24 @@ password) must come from your secret manager — never baked into the image.
 The hosted flavor runs as one gateway replica with:
 - **gateway** (`captatum`) — the MCP + fetch service (`node --no-warnings src/server.ts`).
 - a **reverse-tunnel** sidecar (e.g. `cloudflared`) — exposes the gateway without an inbound port.
-- a **browser sidecar** — long-lived Chromium over CDP for Tier-3 render, isolated to its own blast radius (no OAuth keys, no store, no env).
+- an optional **browser workload** — long-lived Chromium over CDP for Tier-3
+  render, with no OAuth keys, store, or secret-bearing environment.
 
 The reverse tunnel's forwarding headers carry authority only with both its
-allowlisted socket address and the edge-injected proxy authenticator. This keeps
-the browser untrusted even when an orchestrator gives all three containers one
-network namespace. The gateway applies the same gate to forwarded address, host,
-protocol, and port headers, then erases the authenticator from parsed and raw
-header views before route dispatch.
+allowlisted socket address and the edge-injected proxy authenticator. The gateway
+applies the same gate to forwarded address, host, protocol, and port headers,
+then erases the authenticator from parsed and raw header views before route
+dispatch.
+
+The browser must never share the gateway or tunnel network namespace. A
+compromised no-sandbox browser could otherwise bind a temporarily free gateway
+port and receive the tunnel's authenticated traffic. The supported production
+shape gives the browser its own Pod/network namespace, permits CDP ingress only
+from the gateway, and installs a default-deny IPv4/IPv6 OUTPUT firewall before
+Chromium starts. The browser's page requests still route through the gateway's
+guarded fetcher. The exact CDP allowlist accepts only the production Kubernetes
+service origin; loopback and arbitrary service endpoints fail boot before state
+is opened.
 
 The concrete deployment (registry, orchestrator manifest, tunnel token, hostname, secrets) is declared in the **private infrastructure repository** and applied with whatever that repo uses. This public repo ships only the image and the runtime configuration above.
 
@@ -69,5 +80,9 @@ Whatever orchestrator you run, a hosted release is roughly:
 ## Gotchas (independent of where you host)
 
 - **Apply only after the image is pullable.** Confirm the tag exists in the registry before you bump the manifest, or the pod stays in `ImagePullBackOff`.
-- **Tier-3 needs the sidecar.** If `CAPTATUM_BROWSER_CDP_ENDPOINT` is unset or the browser container isn't running, the gateway falls back to Tier-1 (no crash). After deploy, confirm a Tier-3 render end-to-end.
-- **The browser image's Chromium major must match the gateway's `playwright` pin** — only bump the sidecar tag when `Dockerfile.browser` / `scripts/browser-sidecar.sh` change.
+- **Tier-3 needs the isolated browser workload.** If
+  `CAPTATUM_BROWSER_CDP_ENDPOINT` is unset, the gateway reports
+  `render-unavailable` without crashing. Do not point it at loopback or place a
+  browser in the gateway namespace; both are rejected deployment shapes. After
+  deploying the reviewed production topology, confirm a Tier-3 render end-to-end.
+- **The browser image's Chromium major must match the gateway's `playwright` pin** — only bump the browser tag when `Dockerfile.browser` / `scripts/browser-sidecar.sh` change.
