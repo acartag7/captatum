@@ -39,7 +39,7 @@ services:
       # Tier-3 renders in the sidecar over the SHARED loopback (the browser
       # service attaches to this gateway's network namespace).
       CAPTATUM_BROWSER_CDP_ENDPOINT: "http://127.0.0.1:9222"
-      # Default SQLite store lives on the persistent volume (no external DB).
+      # OAuth state + stored clients share the private 0700 /data volume.
       CAPTATUM_SQLITE_PATH: "/data/captatum.sqlite"
     volumes:
       - captatum-data:/data

@@ -3,9 +3,10 @@
 # VOLUME are set in the Railway dashboard (or via the `railway` CLI) — see
 # deploy/railway.md.
 #
-# Storage: the default SQLite store needs a persistent volume mounted at /data.
+# Storage: the default SQLite file pair needs a node-writable 0700 volume at /data.
 #   Dashboard: Settings → Volumes → add a volume at /data.
 #   Env: CAPTATUM_SQLITE_PATH=/data/captatum.sqlite
+#   Derived client file: /data/captatum.sqlite.clients
 #
 # Tier-3 (JS rendering): the browser sidecar must share the gateway's network
 # namespace (loopback CDP — the renderer HARD-REJECTS non-loopback CDP hosts).

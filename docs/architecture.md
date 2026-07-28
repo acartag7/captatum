@@ -53,10 +53,10 @@ not concretes.
   `src/infrastructure/<platform>/` + one registry line + one fixture. Not part of
   the public contract.
 - **`StorePort`** — OAuth state only (auth codes + refresh tokens, hashed). The
-  hosted flavor uses **TiDB via `mysql2`** and the repo ships migrations/store
-  code for that path. A **`node:sqlite`** store is also shipped and tested for
-  local/dev OAuth-state use, but the current local-binary stdio bridge has no
-  OAuth and does not open a store.
+  hosted flavor uses **`node:sqlite`** in a private state directory and supports
+  one gateway replica. Captatum keeps OAuth state and DCR/machine-client state in
+  separate SQLite files. The local-binary stdio bridge has no OAuth and opens
+  neither store.
 - **`ModelRouterPort`** — `pick(task, inputTokens, options?): { provider, model?, free?, reason? }` +
   `feedback(model, score)` for a deterministic per-model EMA. `options.localOnly`
   is used when fetched content has sensitive/non-public signals. Implemented by

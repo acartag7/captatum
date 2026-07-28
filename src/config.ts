@@ -97,20 +97,6 @@ export const config = {
      *  limit). A POST over the cap is aborted (tryAcquire, never awaited) as render_concurrency_limit. */
     postConcurrency: () => envPositiveInteger("CAPTATUM_RENDER_POST_CONCURRENCY", 6),
   },
-  tidb: {
-    host: () => envString("TIDB_HOST", ""),
-    port: () => envPositiveInteger("TIDB_PORT", 4000),
-    database: () => envString("TIDB_DATABASE", "captatum"),
-    user: () => envString("TIDB_USER", ""),
-    password: () => envString("TIDB_PASSWORD", ""),
-    sslCa: () => envString("TIDB_SSL_CA", ""),
-  },
-  store: {
-    /** Default hosted OAuth-state store when no TIDB_HOST is set: a single SQLite
-     *  file (node:sqlite, no server). Parent dir is created at boot. TiDB remains
-     *  the optional scale path — set TIDB_HOST to select it. */
-    sqlitePath: () => envString("CAPTATUM_SQLITE_PATH", "./data/captatum.sqlite"),
-  },
   bulk: {
     /** Hosted captatum_bulk gate (BULK-GATE): ON as of PR 3 — the LimitingFetcher
      *  (BULK-2) + BulkQuotaPort (BULK-1) have landed. Local flavor ships ON regardless.

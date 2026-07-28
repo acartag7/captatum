@@ -1,8 +1,9 @@
 # Deploy
 
 captatum ships a generic, **infra-agnostic** container image. The hosted
-flavor runs as a stateless service behind a reverse tunnel (e.g. Cloudflare
-Tunnel) with a MySQL-compatible store (e.g. TiDB) for OAuth state. The actual
+flavor runs as one stateful gateway replica behind a reverse tunnel (e.g.
+Cloudflare Tunnel), with OAuth and client state in two SQLite files on a private
+volume. The actual
 deployment configuration — registry, network, DB host, tunnel token, hostnames,
 secrets — lives in the **private infrastructure repository**, not here. This
 public repo intentionally contains no infra internals.
@@ -22,7 +23,7 @@ browser-capable base image and unset `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`.
 ## Runtime configuration
 
 See [`.env.example`](../.env.example) for the full env shape:
-`CAPTATUM_FLAVOR=hosted`, `OAUTH_*`, `TIDB_*`, `MCP_ALLOWED_*`,
+`CAPTATUM_FLAVOR=hosted`, `OAUTH_*`, `CAPTATUM_SQLITE_PATH`, `MCP_ALLOWED_*`,
 `OPENROUTER_API_KEY`. Secrets (OAuth ES256 JWK, DB password) must come from your
 secret manager — never baked into the image.
 
@@ -52,8 +53,10 @@ Whatever orchestrator you run, a hosted release is roughly:
 
 1. Build + push the gateway image (and, when `Dockerfile.browser` / `scripts/browser-sidecar.sh` change, the browser image) to your registry. `release.yml` publishes multi-arch images to GHCR on a tagged release.
 2. Bump the image tag in your workload manifest and apply it.
-3. Wait for the new pod to become **Ready** (readiness probe is `GET /healthz`).
-4. Live-probe `POST /mcp` → expect `401` (alive + auth-gating).
+3. Replace the old replica without overlap; v0.20.0's stored-DCR migration must
+   never serve concurrently with a pre-v0.20 replica.
+4. Wait for the new pod to become **Ready** (readiness probe is `GET /healthz`).
+5. Live-probe `POST /mcp` → expect `401` (alive + auth-gating).
 
 ## Gotchas (independent of where you host)
 

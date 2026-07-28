@@ -8,6 +8,7 @@ import {
   signAccessToken,
   createBridgeConfig,
   type BridgeConfig,
+  type ClientStore,
   type IdentityPort,
 } from "mcp-sso";
 import { createMemoryStore } from "mcp-sso/store/memory";
@@ -24,6 +25,10 @@ import { CAPTATUM_SERVER_INSTRUCTIONS } from "../src/interfaces/mcp/schema.ts";
 const NOW_MS = Date.parse("2026-06-16T12:00:00.000Z");
 const HOST = "captatum.test";
 const ORIGIN = "https://client.test";
+const testClientStore: ClientStore = {
+  async save(): Promise<void> {},
+  async find(): Promise<null> { return null; },
+};
 
 // Synthetic CF-Access identity for the hosted app (the /oauth/authorize route is
 // registered but not driven by these tests — they mint tokens directly — so a
@@ -343,7 +348,8 @@ function hostedConfig(): BridgeConfig {
     scopeCatalog: ["fetch:read", "fetch:transform"],
     defaultScopes: ["fetch:read"],
     allowedOrigins: [ORIGIN],
-    dcr: { mode: "stateless" },
+    dcr: { mode: "stored", store: testClientStore },
+    clientCredentials: { enabled: true },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,

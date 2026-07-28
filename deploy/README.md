@@ -7,18 +7,20 @@ covers the **common setup** and three one-click targets: **Railway**, **EC2**, a
 
 The common setup is intentionally dependency-light:
 
-- **State**: a local **SQLite file** (the default OAuth-state store — no database).
-  Set `TIDB_HOST` only if you want the optional TiDB scale path.
+- **State**: two local SQLite files on one volume — OAuth state at
+  `CAPTATUM_SQLITE_PATH` and clients at the derived `<path>.clients` companion.
+  v0.20.x supports exactly one gateway replica; any TiDB configuration is
+  rejected at boot.
 - **Auth**: gateway OAuth **+ Cloudflare Access** in front of the consent screen.
 - **Tier-3 rendering**: a separate **browser sidecar** container (blast-radius
-  separation — a browser compromise never reaches OAuth keys / the SQLite file).
+  separation — a browser compromise never reaches OAuth keys / the SQLite files).
 
 ```
                  Cloudflare Access (consent identity)
                           │  Cloudflare Tunnel
                           ▼
    ┌──────────────────────────────────────────────┐
-   │ captatum gateway  (OAuth keys, SQLite file)  │  127.0.0.1:3000
+   │ captatum gateway  (OAuth keys, SQLite files)  │  127.0.0.1:3000
    │       │ CDP                                    │
    │       ▼                                        │
    │ captatum-browser (Chromium, no secrets)       │
@@ -44,7 +46,7 @@ Set the deploy-specific values:
   `https://claude.ai,https://chat.openai.com`). Never `*`.
 - `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS` — the public host/origin(s) clients
   reach (inbound DNS-rebinding protection).
-- `CAPTATUM_SQLITE_PATH` — the SQLite store path. The code default is `./data/captatum.sqlite` (resolved against the container's CWD `/app`); set this to `/data/captatum.sqlite` on a mounted volume, as the templates below do — `/app` is root-owned under `USER node`, so the default path is **not writable** there and boot fails with `EACCES` (#85).
+- `CAPTATUM_SQLITE_PATH` — the OAuth-state SQLite path. Its parent is Captatum's private state directory and must be owned by the gateway user at mode `0700`; both database files must be `0600`. Captatum derives the client store as `<path>.clients`, so both land on the same mounted volume without sharing a database file or write lock. The image prepares `/data` as `node:node`/`0700`, including fresh named-volume initialization; for an existing bind mount, run `chown <gateway-uid>:<gateway-gid> /data && chmod 0700 /data` on the host before boot. Set the path to `/data/captatum.sqlite` as the templates do.
 
 ## 2. Cloudflare (Access + Tunnel)
 
@@ -77,12 +79,44 @@ curl -sf https://captatum.your-domain.com/healthz   # -> {"status":"ok"}
 
 Then register the MCP server in your client (claude.ai / ChatGPT connector) with the
 public origin and complete the OAuth consent flow (fronted by Cloudflare Access).
+Stored DCR registrations use the same SQLite volume and survive restarts.
+
+For a headless service, manage machine credentials from the gateway container.
+There is deliberately no HTTP provisioning endpoint:
+
+```sh
+docker compose -f deploy/docker-compose.yml exec gateway \
+  node --no-warnings src/machine-client.ts provision nightly-fetch fetch:transform
+
+docker compose -f deploy/docker-compose.yml exec gateway \
+  node --no-warnings src/machine-client.ts rotate <clientId> 300
+
+docker compose -f deploy/docker-compose.yml exec gateway \
+  node --no-warnings src/machine-client.ts disable <clientId>
+
+docker compose -f deploy/docker-compose.yml exec gateway \
+  node --no-warnings src/machine-client.ts list
+```
+
+Provision and rotate print one JSON credential result to stdout exactly once,
+after the client row and required audit commit atomically. Capture it directly
+into the caller's secret manager; audits and diagnostics go to stderr and contain
+neither the secret nor its hash. If stdout delivery fails or short-writes after
+commit, the CLI attempts a compensating disable and exits non-zero; `list` shows
+the tombstone when that succeeds. If compensation fails, use `list` then
+`disable` before provisioning a replacement. A close failure after successful
+delivery is reported on stderr and exits non-zero without suppressing or
+repeating the valid credential.
+Rotation overlap defaults to 300 seconds and cannot exceed 600 seconds.
+Provisioned scopes are a fixed ceiling and must be a non-empty subset of
+`fetch:read` / `fetch:transform`.
 
 ## Scaling beyond a single instance
 
-SQLite is single-node. For HA / multi-replica, opt into TiDB by setting `TIDB_HOST`
-(+ port/database/user/password and `TIDB_SSL_CA`; TLS required). See
-`docs/contracts.md` "Storage".
+v0.20.x is intentionally single-replica SQLite. Multi-replica operation is
+unsupported. The deferred TiDB path requires an explicit data transfer,
+distributed mutation serialization, bounded retention, and real multi-replica
+acceptance tests before it can return. See `docs/contracts.md` "Storage".
 
 ## Troubleshooting
 
@@ -100,7 +134,8 @@ go to stdout as JSON: `docker compose -f deploy/docker-compose.yml logs -f gatew
 ## Upgrading
 
 Pull a newer `CAPTATUM_TAG` and recreate: `docker compose -f deploy/docker-compose.yml up -d`.
-OAuth state persists in the `captatum-data` SQLite volume. Re-running
+OAuth state and stored client registrations persist in the `captatum-data` SQLite
+volume. The first upgrade from stateless DCR invalidates old stateless client IDs;
+interactive clients re-register once, then survive later restarts. Re-running
 `gen-oauth-keys.ts` rotates the signing key and **invalidates all previously issued
 tokens** (every client must re-authorize).
-

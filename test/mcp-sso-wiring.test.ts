@@ -15,6 +15,8 @@ import {
   createBridgeConfig,
   pkceChallenge,
   type BridgeConfig,
+  type ClientRegistration,
+  type ClientStore,
   type IdentityPort,
 } from "mcp-sso";
 import { createMemoryStore } from "mcp-sso/store/memory";
@@ -74,7 +76,7 @@ const stubIdentity: IdentityPort = {
   },
 };
 
-function makeConfig(): BridgeConfig {
+function makeConfig(clientStore: ClientStore): BridgeConfig {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   return createBridgeConfig({
     issuer: ISSUER,
@@ -86,7 +88,8 @@ function makeConfig(): BridgeConfig {
     scopeCatalog: ["fetch:read", "fetch:transform"],
     defaultScopes: ["fetch:read"],
     allowedOrigins: [ORIGIN],
-    dcr: { mode: "stateless" },
+    dcr: { mode: "stored", store: clientStore },
+    clientCredentials: { enabled: true },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,
@@ -96,7 +99,15 @@ function makeConfig(): BridgeConfig {
 
 async function setup() {
   const clock = new FakeClock(NOW_MS);
-  const oauthConfig = makeConfig();
+  const clients = new Map<string, ClientRegistration>();
+  const clientStore: ClientStore = {
+    async save(client): Promise<void> { clients.set(client.clientId, structuredClone(client)); },
+    async find(clientId): Promise<ClientRegistration | null> {
+      const client = clients.get(clientId);
+      return client ? structuredClone(client) : null;
+    },
+  };
+  const oauthConfig = makeConfig(clientStore);
   const audit = new MemoryAudit();
   const store = createMemoryStore();
   const bridge = new Bridge({ config: oauthConfig, store, clock, audit });

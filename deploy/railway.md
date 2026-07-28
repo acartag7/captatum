@@ -8,8 +8,9 @@ persistent volume for the SQLite store. Cloudflare Access + Tunnel sit in front.
 1. **New project → deploy from image**: `ghcr.io/acartag7/captatum:<tag>` (use the
    latest release tag). (Alternatively, connect this repo and Railway builds from
    `Dockerfile`; `railway.toml` sets the start command + healthcheck.)
-2. **Add a volume**: Settings → Volumes → mount at `/data`. Set
-   `CAPTATUM_SQLITE_PATH=/data/captatum.sqlite`.
+2. **Add a volume**: Settings → Volumes → mount at `/data`. It must be writable by
+   the gateway user and mode `0700`. Set `CAPTATUM_SQLITE_PATH=/data/captatum.sqlite`;
+   the client store is created beside it as `/data/captatum.sqlite.clients`.
 3. **Environment variables**: paste your `.env` (see `deploy/README.md` §1). Generate
    the OAuth keys with `node --no-warnings scripts/gen-oauth-keys.ts` first.
 4. **Public domain**: Railway assigns one; point `OAUTH_ISSUER` / `OAUTH_RESOURCE` /
