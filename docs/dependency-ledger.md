@@ -136,6 +136,35 @@ lockfile. Do not add a new direct dependency or bump an existing pin without
 rechecking it here against the registry and the 15-day rule, and resolving or
 documenting any `pnpm audit --prod` finding.
 
+## v0.20.0 production-audit disposition
+
+Rechecked `2026-07-28` with `corepack pnpm audit --prod`. The locked production
+graph reports public high-severity advisories for two transitive packages:
+
+- `fast-uri@3.1.2` through the MCP SDK's AJV dependency
+  (`GHSA-4c8g-83qw-93j6`, `GHSA-v2hh-gcrm-f6hx`). The selected patch is
+  `3.1.4`, published `2026-07-19T07:42:54.497Z`; it clears the 15-day gate at
+  `2026-08-03T07:42:54.497Z`.
+- `find-my-way@9.6.0` through Fastify (`GHSA-c96f-x56v-gq3h`). The selected
+  patch is `9.7.0`, published `2026-07-21T16:45:28.799Z`; it clears the 15-day
+  gate at `2026-08-05T16:45:28.799Z`.
+
+Both findings were checked against the shipped server before the v0.20.0
+release. Captatum does not use the affected URI resolver for its URL-policy or
+egress decision, and the affected optional server transport is disabled. The
+guarded-fetch boundary continues to parse, authorize, resolve, and request the
+same canonical URL representation. This is therefore a time-bounded
+non-reachability disposition, not a claim that the vulnerable package versions
+are acceptable indefinitely.
+
+The `fast-uri` exception expires at `2026-08-03T07:42:54.497Z`; upgrade it in
+the first patch release on or after that instant, rerun the production audit,
+and remove its exception. The `find-my-way` exception separately expires at
+`2026-08-05T16:45:28.799Z`; upgrade it in the first patch release on or after
+that instant, rerun the audit, and remove the remaining exception. Do not enable
+the affected optional transport or introduce the affected URI resolver at a
+trust boundary while either disposition is active.
+
 ## Browser workload image (Dockerfile.browser)
 
 The Tier-3 browser workload runs Chromium in its own Pod/network namespace; the
