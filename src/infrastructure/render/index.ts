@@ -15,8 +15,9 @@ export type { BrowserUrlGuard } from "./browser-url-guard.ts";
  * render-concurrency limiter (DOS-2): Chromium is the expensive resource, so
  * concurrent Tier-3 renders are bounded independently of the global admission cap.
  */
-export function createRenderer(): RenderPort {
-  const cdpEndpoint = config.render.cdpEndpoint();
+export function createRenderer(
+  cdpEndpoint = config.render.cdpEndpoint(),
+): RenderPort {
   // Hosted never launches a browser in-process (threat model): without a CDP
   // sidecar, Tier-3 is render-unavailable rather than attempting an in-process
   // launch inside the OAuth-key blast radius. The published gateway image ships no

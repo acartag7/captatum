@@ -26,10 +26,11 @@ the contract reference; this file is the security reasoning.
   the edge; the gateway removes it from parsed and raw/distinct header views
   before route dispatch. The same gate covers `Forwarded`, every Fastify
   `X-Forwarded-*` authority (`For`, `Host`, `Proto`, and `Port`), `X-Real-IP`,
-  and `CF-Connecting-IP`, and removes all of them on rejection. A browser-sidecar
-  compromise can share the proxy's Pod/network address but not its secret, so
-  it cannot choose DCR/token rate-limit identities or framework host/protocol
-  authority.
+  and `CF-Connecting-IP`, and removes all of them on rejection. The production
+  browser runs in a separate Pod/network namespace from gateway + cloudflared,
+  receives no secret, has no direct CNI egress, and accepts CDP only from the
+  gateway Pod. It therefore cannot observe the proxy hop or bind gateway port
+  3000 during a container restart to recover the edge authenticator.
 - The DEFAULT hosted state is two local SQLite files (`node:sqlite`, no network):
   mcp-sso OAuth codes/tokens at `CAPTATUM_SQLITE_PATH`, and DCR/machine clients at
   the derived `<path>.clients`. The configured path's parent is the private Captatum
@@ -129,16 +130,24 @@ the contract reference; this file is the security reasoning.
   enforced; the browser runs with an empty environment. **Sandbox model: an
   in-process launch keeps the OS sandbox ON (`chromiumSandbox` defaults true —
   `--no-sandbox` in-process is a release blocker). The hosted path instead runs
-  Chromium in a separate sidecar container connected over CDP
+  Chromium in a separate browser workload connected over CDP
   (`CAPTATUM_BROWSER_CDP_ENDPOINT`, `Dockerfile.browser`, `scripts/browser-sidecar.sh`);
   there `--no-sandbox` is acceptable because the container is the isolation
   boundary. The published gateway image (`Dockerfile`) ships **no browser binary**,
   so in-process Tier-3 is structurally impossible there — a misconfigured hosted
   gateway degrades to `render-unavailable` rather than launching Chromium inside the
-  OAuth-key blast radius. Blast-radius caveat: the fetcher-fulfillment control above closes the
-  page-content SSRF path, but on the current hosted deploy it does not by itself
-  fully bound a browser-process compromise — that needs separate network/role
-  isolation for the sidecar, tracked as its own infra control. Either way the
+  OAuth-key blast radius. Production additionally places the browser in its own
+  Pod/network namespace, runs it non-root with every Linux capability dropped,
+  denies browser egress, and permits CDP ingress only from the gateway Pod. A
+  no-secret, no-capability relay in that same browser boundary exposes fixed Pod
+  port 9223 only to forward into Chromium's loopback-only TCP/9222 listener; it
+  has no configurable target and caps concurrent connections. The
+  gateway accepts only the exact loopback origins or the fixed production
+  `captatum-browser.captatum.svc.cluster.local:9222` origin; parsing and
+  allowlisting happen before any hosted state side effect. This prevents both
+  packet sniffing and the sibling port-rebinding attack during a gateway restart.
+  The cluster node/CNI and principals allowed to mutate NetworkPolicy or Pod
+  labels remain inside the operator trust boundary. Either way the
   browser never runs in-process with `--no-sandbox` inside the gateway's blast
   radius. The `page.route` SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
@@ -391,6 +400,12 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
 
 - Tier-3 is the maximal SSRF surface. The in-browser controls are mandatory, not
   advisory; a Tier-3 path that drops any of them is a release blocker.
+- The production browser isolation depends on the Kubernetes Pod/network
+  namespace boundary and enforced NetworkPolicy. A principal that controls the
+  node, CNI, namespace workload labels, or policy objects is already inside the
+  deployment trust boundary. A compromised renderer may still forge rendered
+  page output, but it receives no gateway secret and cannot originate page
+  network egress; fetched content remains untrusted regardless.
 - **TIER3-POST — page-authored upstream egress (#111).** Tier-3 now forwards a
   first-party POST body (Notion/Jira hydrate via POST), which is untrusted page content
   egressed to a first-party endpoint. A compromised/XSSed page on victim.com could amplify

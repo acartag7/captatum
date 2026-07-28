@@ -7,6 +7,7 @@ import type {
   RenderOutput,
   RenderPort,
 } from "../../application/ports/renderer.ts";
+import { parseCdpEndpoint } from "../../config.ts";
 import { streamFromBytes } from "../http/body.ts";
 import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { RenderRouteState } from "./route-state.ts";
@@ -50,7 +51,7 @@ export class PlaywrightRenderer implements RenderPort {
   constructor(deps: PlaywrightRendererDeps = {}) {
     this.loadPlaywright = deps.loadPlaywright ?? defaultLoadPlaywright;
     this.guard = deps.guard ?? new P1BrowserUrlGuard();
-    this.cdpEndpoint = deps.cdpEndpoint;
+    this.cdpEndpoint = parseCdpEndpoint(deps.cdpEndpoint ?? "");
     this.chromiumSandbox = deps.chromiumSandbox ?? true;
     this.settleMs = deps.settleMs ?? 5000; // #110: was 3000; both waits return early when stable, so a larger cap only helps slow-hydrating SPAs (total settle bounded by render timeoutMs).
     this.settleMinDwellMs = deps.settleMinDwellMs ?? 1500;
@@ -68,9 +69,6 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        // TIER3-CDP-1: CDP endpoint must be loopback (operator-set, validate); sidecar Chromium is reused, never closed here.
-        let cdpHost = ""; try { cdpHost = new URL(this.cdpEndpoint).hostname; } catch {}
-        if (!["localhost", "127.0.0.1", "[::1]"].includes(cdpHost)) throw new RenderError("render_unavailable", "CDP endpoint must be loopback");
         if (!this.cdpBrowser) this.cdpBrowser = await playwright.chromium.connectOverCDP(this.cdpEndpoint);
         browser = this.cdpBrowser;
       } else {

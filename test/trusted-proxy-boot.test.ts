@@ -12,7 +12,7 @@ const SAFE_TMP = realpathSync(tmpdir());
 test("missing trusted-proxy config aborts before creating SQLite state", async () => {
   const parent = join(SAFE_TMP, `captatum-proxy-gate-${randomUUID()}`);
   const file = join(parent, "auth.sqlite");
-  const restore = installHostedEnvWithoutProxy(file);
+  const restore = installHostedEnv(file, "cidrs");
   try {
     await assert.rejects(
       startHostedServer({ host: "127.0.0.1", port: 0, log: () => {} }),
@@ -31,7 +31,7 @@ test("missing trusted-proxy config aborts before creating SQLite state", async (
 test("missing proxy authenticator aborts before creating SQLite state", async () => {
   const parent = join(SAFE_TMP, `captatum-proxy-secret-${randomUUID()}`);
   const file = join(parent, "auth.sqlite");
-  const restore = installHostedEnvWithoutProxy(file, "secret");
+  const restore = installHostedEnv(file, "secret");
   try {
     await assert.rejects(
       startHostedServer({ host: "127.0.0.1", port: 0, log: () => {} }),
@@ -43,9 +43,27 @@ test("missing proxy authenticator aborts before creating SQLite state", async ()
   }
 });
 
-function installHostedEnvWithoutProxy(
+test("invalid CDP origin aborts before creating SQLite state", async () => {
+  const parent = join(SAFE_TMP, `captatum-cdp-gate-${randomUUID()}`);
+  const file = join(parent, "auth.sqlite");
+  const restore = installHostedEnv(file, undefined, {
+    CAPTATUM_BROWSER_CDP_ENDPOINT: "http://other-service.captatum.svc.cluster.local:9222",
+  });
+  try {
+    await assert.rejects(
+      startHostedServer({ host: "127.0.0.1", port: 0, log: () => {} }),
+      /CAPTATUM_BROWSER_CDP_ENDPOINT is not an allowed CDP origin/,
+    );
+    assert.equal(existsSync(parent), false);
+  } finally {
+    restore();
+  }
+});
+
+function installHostedEnv(
   file: string,
-  missing: "cidrs" | "secret" = "cidrs",
+  missing?: "cidrs" | "secret",
+  overrides: Record<string, string> = {},
 ): () => void {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const values: Record<string, string> = {
@@ -71,11 +89,11 @@ function installHostedEnvWithoutProxy(
     CF_ACCESS_CERTS_URL:
       "https://team.cloudflareaccess.com/cdn-cgi/access/certs",
     CF_ACCESS_ISSUER: "https://team.cloudflareaccess.com",
+    ...overrides,
   };
   const cleared = [
-    missing === "cidrs"
-      ? "CAPTATUM_TRUSTED_PROXY_CIDRS"
-      : "CAPTATUM_PROXY_AUTH_SECRET",
+    ...(missing === "cidrs" ? ["CAPTATUM_TRUSTED_PROXY_CIDRS"] : []),
+    ...(missing === "secret" ? ["CAPTATUM_PROXY_AUTH_SECRET"] : []),
     "TIDB_HOST",
     "TIDB_PORT",
     "TIDB_DATABASE",

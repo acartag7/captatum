@@ -107,6 +107,7 @@ async function resolveBoot(options: StartHostedServerOptions) {
   const host = options.host ?? config.http.host();
   const port = options.port ?? config.http.port();
   const security = mcpSecurity(host, port);
+  const cdpEndpoint = config.render.cdpEndpoint();
   const selectedStore = resolveHostedStoreConfig();
   const clock = options.clock ?? productionClock;
   const audit = options.audit ?? productionAudit;
@@ -125,7 +126,7 @@ async function resolveBoot(options: StartHostedServerOptions) {
     ? await createDefaultLlmTransformer()
     : options.transformer ?? undefined;
   const renderer = options.renderer === undefined
-    ? createRenderer()
+    ? createRenderer(cdpEndpoint)
     : options.renderer ?? undefined;
   const captatum = createCaptatumUseCase({
     fetcher,

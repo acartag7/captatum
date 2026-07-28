@@ -5,6 +5,13 @@ import {
   parseTrustedProxyCidrs,
 } from "./domain/trusted-proxy.ts";
 
+const ALLOWED_CDP_ORIGINS = new Set([
+  "http://localhost:9222",
+  "http://127.0.0.1:9222",
+  "http://[::1]:9222",
+  "http://captatum-browser.captatum.svc.cluster.local:9222",
+]);
+
 export const config = {
   source: {
     maxFileLines: 250,
@@ -93,8 +100,10 @@ export const config = {
   render: {
     allowRenderDefault: false,
     timeoutMs: 20000,
-    /** CDP endpoint of a browser sidecar (e.g. "http://localhost:9222"). If set, Tier-3 connects to a Chromium in its own container instead of launching one in-process (blast-radius separation). */
-    cdpEndpoint: () => envString("CAPTATUM_BROWSER_CDP_ENDPOINT", ""),
+    /** CDP origin of the isolated browser workload. Empty disables hosted Tier-3. */
+    cdpEndpoint: () => parseCdpEndpoint(
+      envString("CAPTATUM_BROWSER_CDP_ENDPOINT", ""),
+    ),
     /** Chromium sandbox for in-process launch (default true — threat model: never --no-sandbox). Only relevant when no sidecar is configured. */
     chromiumSandbox: () => envString("CAPTATUM_BROWSER_INPROCESS_SANDBOX", "true") === "true",
     /** DOS-2: max concurrent Tier-3 renders. Chromium is the expensive resource, so
@@ -139,6 +148,28 @@ export const config = {
     quotaSeedLimit: () => envPositiveInteger("CAPTATUM_BULK_QUOTA_SEED_LIMIT", 300),
   },
 };
+
+export function parseCdpEndpoint(raw: string): string | undefined {
+  const value = raw.trim();
+  if (!value) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("CAPTATUM_BROWSER_CDP_ENDPOINT is not a valid URL");
+  }
+  if (
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    !ALLOWED_CDP_ORIGINS.has(parsed.origin)
+  ) {
+    throw new Error("CAPTATUM_BROWSER_CDP_ENDPOINT is not an allowed CDP origin");
+  }
+  return parsed.origin;
+}
 
 function envString(name: string, fallback: string): string {
   const value = process.env[name];

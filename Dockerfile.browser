@@ -11,8 +11,10 @@ FROM mcr.microsoft.com/playwright:v1.61.0-noble@sha256:57b65fdc9ceabe0ef613124c7
 
 ENV CAPTATUM_BROWSER_CDP_PORT=9222
 COPY scripts/browser-sidecar.sh /usr/local/bin/browser-sidecar.sh
+COPY scripts/browser-cdp-relay.mjs /usr/local/bin/browser-cdp-relay.mjs
 RUN chmod +x /usr/local/bin/browser-sidecar.sh
 
-# No network listener besides CDP; the gateway reaches it over the task network.
-EXPOSE 9222
+# Chromium stays on loopback. The isolated browser Pod runs the fixed relay
+# entrypoint in a second no-secret container for its NetworkPolicy-gated Service.
+EXPOSE 9222 9223
 CMD ["/usr/local/bin/browser-sidecar.sh"]
