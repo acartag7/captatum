@@ -57,6 +57,7 @@ test("HTTP MCP listener refuses local-binary instead of exposing an unauthentica
       audit: new MemoryAudit(),
       allowedHosts: [HOST],
       allowedOrigins: [ORIGIN],
+      trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
     }),
     (error: unknown) => error instanceof HostedFlavorError,
   );
@@ -262,6 +263,7 @@ async function setup(options: { transformer?: TransformPort } = {}) {
     audit,
     allowedHosts: [HOST],
     allowedOrigins: [ORIGIN],
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
   });
   return {
     app,

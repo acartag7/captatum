@@ -93,6 +93,7 @@ const app = await createHttpApp({
   audit,
   allowedHosts: [`127.0.0.1:${port}`],
   allowedOrigins: ["https://client.test"],
+  trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
 });
 const token = await signAccessToken(
   { subject: "smoke-user", clientId: "smoke-client", scopes: ["fetch:read"] },

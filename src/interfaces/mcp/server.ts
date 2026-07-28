@@ -21,6 +21,7 @@ import type { Result } from "../../domain/result.ts";
 import type { BulkResult } from "../../domain/bulk-result.ts";
 import { resultToMcpText } from "./format.ts";
 import { buildStructuredContent } from "./shape.ts";
+import { isApplicationAgentProfile } from "./application-agent-profile.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS, CAPTATUM_TOOL_NAME, captatumToolDefinition } from "./schema.ts";
 import { CAPTATUM_BULK_TOOL_NAME, captatumBulkToolDefinition } from "./bulk-schema.ts";
 import { callBulk } from "./bulk-handler.ts";
@@ -98,7 +99,14 @@ async function callCaptatum(args: unknown, deps: CaptatumMcpServerDeps, profile:
       process.stderr.write(`captatum: audit write failed: ${auditError instanceof Error ? auditError.message : auditError}\n`);
     }
     return {
-      content: [{ type: "text", text: resultToMcpText(result, profile.textDebug && normalized.debug) }],
+      content: [{
+        type: "text",
+        text: resultToMcpText(
+          result,
+          profile.textDebug && normalized.debug,
+          isApplicationAgentProfile(result, normalized.debug),
+        ),
+      }],
       structuredContent: buildStructuredContent(result, normalized.debug),
     };
   } catch (error) {

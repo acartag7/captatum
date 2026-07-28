@@ -118,8 +118,11 @@ Load it: `launchctl load ~/Library/LaunchAgents/com.cloudflare.cloudflared.plist
 
 The required vars (all in `.env.example`): `CAPTATUM_FLAVOR=hosted`, the OAuth signing
 keys (from `scripts/gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), and
-`MCP_ALLOWED_HOSTS`/`MCP_ALLOWED_ORIGINS`. `docker compose` reads `../.env` relative to
-`deploy/`. The SQLite store + browser sidecar need no extra config (defaults).
+`MCP_ALLOWED_HOSTS`/`MCP_ALLOWED_ORIGINS`. Set
+`CAPTATUM_TRUSTED_PROXY_CIDRS` to the exact socket peer that reaches the gateway;
+for the production same-Pod cloudflared topology it is
+`127.0.0.1/32,::1/128`. `docker compose` reads `../.env` relative to `deploy/`.
+The SQLite store + browser sidecar need no extra config (defaults).
 
 ### Cutover from an existing managed deployment
 
@@ -129,4 +132,3 @@ from the previous deployment to this host; (3) verify `/healthz` + a challenge s
 (`curl -sI https://www.npmjs.com/package/react` → 200). Connectors keep the same URL —
 no client-side change. Existing OAuth tokens re-issue on first reconnect (one-time; a
 fresh store starts empty).
-

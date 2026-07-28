@@ -118,8 +118,11 @@ and the MCP route. `src/interfaces/http/mcp-route.ts` authenticates every
 `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`,
 `enableJsonResponse: true`) and a fresh MCP server for that request, and enables
 SDK Host/Origin DNS-rebinding protection. Hosted mode requires explicit
-`MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local mode falls back to loopback
-host values. `GET`/`DELETE /mcp` return 405. Tool registration is in
+`MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, and an exact
+`CAPTATUM_TRUSTED_PROXY_CIDRS` socket-peer allowlist. Fastify ignores forwarded
+client addresses from any other peer, so OAuth rate-limit identities are neither
+globally collapsed behind the tunnel nor caller-selected. `GET`/`DELETE /mcp`
+return 405. Tool registration is in
 `src/interfaces/mcp/`; the tool schema has `additionalProperties: false`, and the
 default output is provider-conditional (`raw` with no provider, `summary` with one).
 

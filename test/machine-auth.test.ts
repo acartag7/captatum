@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 import { test } from "node:test";
 import { decodeJwt, type JWK } from "jose";
 import {
@@ -27,6 +28,11 @@ import { createHostedAuthStore } from "../src/infrastructure/auth-store.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { createHttpApp } from "../src/interfaces/http/app.ts";
 import { startHostedServer } from "../src/server.ts";
+import { runMachineClientCli } from "../src/machine-client.ts";
+import {
+  APPLICATION_AGENT_DOCUMENT,
+  applicationAgentArguments,
+} from "./support/application-agent-contract.ts";
 
 const SAFE_TMP = realpathSync(tmpdir());
 const ISSUER = "https://captatum.test";
@@ -69,7 +75,7 @@ const unusedIdentity: IdentityPort = {
 const transformer: TransformPort = {
   async transform() {
     return {
-      result: JSON.stringify({ title: "Example Domain" }),
+      result: JSON.stringify(APPLICATION_AGENT_DOCUMENT),
       info: { provider: "test", model: "fixed-extract" },
     };
   },
@@ -128,6 +134,7 @@ async function setup(existing?: {
     audit,
     allowedHosts: ["captatum.test"],
     allowedOrigins: [ORIGIN],
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   return {
@@ -150,19 +157,17 @@ async function exchange(
   app: Awaited<ReturnType<typeof createHttpApp>>,
   clientId: string,
   clientSecret: string,
+  forwardedFor?: string,
 ) {
-  return app.inject({
-    method: "POST",
-    url: "/oauth/token",
-    headers: {
+  const payload = new URLSearchParams({
+    grant_type: "client_credentials",
+    scope: "fetch:transform",
+  }).toString();
+  return requestHttp(app, "/oauth/token", "POST", {
       authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
       "content-type": "application/x-www-form-urlencoded",
-    },
-    payload: new URLSearchParams({
-      grant_type: "client_credentials",
-      scope: "fetch:transform",
-    }).toString(),
-  });
+      ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : {}),
+    }, payload);
 }
 
 async function callCaptatum(
@@ -175,32 +180,36 @@ async function callCaptatum(
     method: "tools/call",
     params: {
       name: "captatum",
-      arguments: {
-        url: "https://example.com",
-        output: "extract",
-        allowRender: true,
-        debug: false,
-        timeoutMs: 20_000,
-        maxBytes: 2_097_152,
-        budget: 4000,
-      },
+      arguments: applicationAgentArguments("https://example.com"),
     },
   });
+  return requestHttp(app, "/mcp", "POST", {
+    authorization: `Bearer ${accessToken}`,
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+    "mcp-protocol-version": "2025-11-25",
+  }, payload);
+}
+
+async function requestHttp(
+  app: Awaited<ReturnType<typeof createHttpApp>>,
+  path: string,
+  method: "GET" | "POST",
+  headers: Record<string, string> = {},
+  payload = "",
+): Promise<{ statusCode: number; body: string }> {
   const origin = new URL(app.listeningOrigin);
   return new Promise<{ statusCode: number; body: string }>(
     (resolvePromise, rejectPromise) => {
       const request = httpRequest({
         hostname: origin.hostname,
         port: origin.port,
-        path: "/mcp",
-        method: "POST",
+        path,
+        method,
         headers: {
-          authorization: `Bearer ${accessToken}`,
           host: "captatum.test",
-          accept: "application/json, text/event-stream",
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(payload),
-          "mcp-protocol-version": "2025-11-25",
+          ...(payload ? { "content-length": String(Buffer.byteLength(payload)) } : {}),
+          ...headers,
         },
       }, (response) => {
         const chunks: Buffer[] = [];
@@ -212,7 +221,7 @@ async function callCaptatum(
         }));
       });
       request.on("error", rejectPromise);
-      request.end(payload);
+      request.end(payload || undefined);
     },
   );
 }
@@ -310,7 +319,7 @@ function assertApplicationAgentCompatibility(rpc: Record<string, any>): void {
   ]);
   assert.equal(json, receipt.result);
   assert.deepEqual(extra, []);
-  assert.deepEqual(JSON.parse(json!), { title: "Example Domain" });
+  assert.deepEqual(JSON.parse(json!), APPLICATION_AGENT_DOCUMENT);
 }
 
 test("poisoned machine records fail closed as invalid_client instead of a token-endpoint 500", async () => {
@@ -389,6 +398,78 @@ test("concurrent SQLite rotations return one valid credential and one pre-output
       (await exchange(ctx.app, first.clientId, winners[0]!.value.clientSecret)).statusCode,
       200,
       "every successfully returned secret remains valid",
+    );
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("failed CLI output cannot disable a newer successfully returned rotation", async () => {
+  const ctx = await setup();
+  try {
+    const first = await provisionMachineClient(
+      {
+        store: ctx.stores.clientStore,
+        catalog: OAUTH_SCOPES,
+        clock: ctx.clock,
+        audit: ctx.audit,
+      },
+      { allowedScopes: ["fetch:transform"] },
+    );
+    let concurrent: { clientSecret: string; version: number } | undefined;
+    const failedOutput = new Writable({
+      write(_chunk, _encoding, callback) {
+        void rotateMachineClientSecret(
+          {
+            store: ctx.stores.clientStore,
+            catalog: OAUTH_SCOPES,
+            clock: ctx.clock,
+            audit: ctx.audit,
+          },
+          first.clientId,
+          { graceSeconds: 10 },
+        ).then(
+          (value) => {
+            concurrent = value;
+            callback(Object.assign(
+              new Error("broken output"),
+              { code: "EPIPE" },
+            ));
+          },
+          (error) => callback(
+            error instanceof Error ? error : new Error("rotation failed"),
+          ),
+        );
+      },
+    });
+    const exitCode = await runMachineClientCli(
+      ["rotate", first.clientId, "10"],
+      {
+        env: { TIDB_HOST: "", CAPTATUM_SQLITE_PATH: ctx.file },
+        clock: ctx.clock,
+        stdout: failedOutput as never,
+        stderr: { write() { return true; } },
+      },
+    );
+    assert.equal(exitCode, 2, "exact-version compensation reports the CAS conflict");
+    assert.equal(concurrent?.version, 3);
+    assert.equal(
+      (await exchange(
+        ctx.app,
+        first.clientId,
+        concurrent!.clientSecret,
+      )).statusCode,
+      200,
+      "the newer emitted secret remains valid",
+    );
+    const current = await ctx.stores.clientStore.find(first.clientId);
+    assert.equal(
+      current?.applicationType === "machine" ? current.status : undefined,
+      "active",
+    );
+    assert.equal(
+      current?.applicationType === "machine" ? current.version : undefined,
+      3,
     );
   } finally {
     await ctx.close();
@@ -489,7 +570,7 @@ test("shipped server boots, accepts Basic machine auth, and persists it across r
       },
       { name: "application-agent", allowedScopes: ["fetch:transform"] },
     );
-    await assertRegistrationFloodBounded(runtime.app);
+    await assertRegistrationFloodBounded(runtime.app, credential);
     await assertShippedMachineCall(runtime.app, credential);
     await runtime.close();
     runtime = undefined;
@@ -515,41 +596,108 @@ test("shipped server boots, accepts Basic machine auth, and persists it across r
 
 async function assertRegistrationFloodBounded(
   app: Awaited<ReturnType<typeof createHttpApp>>,
+  credential: { clientId: string; clientSecret: string },
 ): Promise<void> {
-  const payload = {
+  const payload = JSON.stringify({
     redirect_uris: ["https://client.test/callback"],
     token_endpoint_auth_method: "none",
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     application_type: "web",
-  };
+  });
+  const register = (forwardedFor: string) => requestHttp(
+    app,
+    "/oauth/register",
+    "POST",
+    {
+      "content-type": "application/json",
+      "x-forwarded-for": forwardedFor,
+    },
+    payload,
+  );
   for (let attempt = 0; attempt < 10; attempt++) {
-    const accepted = await app.inject({
-      method: "POST",
-      url: "/oauth/register",
-      headers: { "content-type": "application/json" },
-      payload,
-    });
+    const accepted = await register("198.51.100.10");
     assert.equal(accepted.statusCode, 201, accepted.body);
   }
-  const rejected = await app.inject({
-    method: "POST",
-    url: "/oauth/register",
-    headers: { "content-type": "application/json" },
-    payload,
-  });
+  const rejected = await register("198.51.100.10");
   assert.equal(rejected.statusCode, 429, rejected.body);
   assert.equal(JSON.parse(rejected.body).error, "temporarily_unavailable");
+  assert.equal(
+    (await register("198.51.100.11")).statusCode,
+    201,
+    "the trusted tunnel attributes a second public source independently",
+  );
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const direct = await app.inject({
+      method: "POST",
+      url: "/oauth/register",
+      remoteAddress: "192.0.2.20",
+      headers: {
+        host: "captatum.test",
+        "content-type": "application/json",
+        "x-forwarded-for": `203.0.113.${attempt + 1}`,
+      },
+      payload,
+    });
+    assert.equal(direct.statusCode, 201, direct.body);
+  }
+  const spoofRejected = await app.inject({
+    method: "POST",
+    url: "/oauth/register",
+    remoteAddress: "192.0.2.20",
+    headers: {
+      host: "captatum.test",
+      "content-type": "application/json",
+      "x-forwarded-for": "203.0.113.200",
+    },
+    payload,
+  });
+  assert.equal(
+    spoofRejected.statusCode,
+    429,
+    "an untrusted direct peer cannot select buckets with forwarding headers",
+  );
+
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const invalid = await exchange(
+      app,
+      "mcc_missing",
+      "mcs_missing",
+      "198.51.100.30",
+    );
+    assert.equal(invalid.statusCode, 401, invalid.body);
+  }
+  assert.equal(
+    (await exchange(
+      app,
+      "mcc_missing",
+      "mcs_missing",
+      "198.51.100.30",
+    )).statusCode,
+    429,
+  );
+  assert.equal(
+    (await exchange(
+      app,
+      credential.clientId,
+      credential.clientSecret,
+      "198.51.100.31",
+    )).statusCode,
+    200,
+    "a second public source can still renew a machine token",
+  );
 }
 
 async function assertShippedMachineCall(
   app: Awaited<ReturnType<typeof createHttpApp>>,
   credential: { clientId: string; clientSecret: string },
 ): Promise<void> {
-  const metadata = await app.inject({
-    method: "GET",
-    url: "/.well-known/oauth-authorization-server",
-  });
+  const metadata = await requestHttp(
+    app,
+    "/.well-known/oauth-authorization-server",
+    "GET",
+  );
   assert.equal(metadata.statusCode, 200, metadata.body);
   const metadataBody = JSON.parse(metadata.body);
   assert.ok(metadataBody.grant_types_supported.includes("client_credentials"));
@@ -592,6 +740,7 @@ function installHostedEnv(file: string): () => void {
     OAUTH_REDIRECT_ALLOWLIST: "https://client.test/callback",
     MCP_ALLOWED_HOSTS: "captatum.test",
     MCP_ALLOWED_ORIGINS: ORIGIN,
+    CAPTATUM_TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128",
     CF_ACCESS_ENABLED: "true",
     CF_ACCESS_AUDIENCE: "test-audience",
     CF_ACCESS_CERTS_URL:

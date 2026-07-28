@@ -19,6 +19,7 @@ import {
   writeAndFlush,
   type CliWritable,
 } from "./machine-client-stream.ts";
+import { disableExactCredentialVersion } from "./machine-client-compensation.ts";
 
 const MACHINE_CLIENT_ID = /^mcc_[A-Za-z0-9_-]{1,200}$/;
 const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
@@ -108,10 +109,11 @@ export async function runMachineClientCli(
     try {
       await writeAndFlush(stdout, `${JSON.stringify(output.value)}\n`);
     } catch {
-      if (output.credentialClientId) {
+      if (output.kind === "credential") {
         const disabled = await disableAfterOutputFailure(
           deps,
-          output.credentialClientId,
+          output.clientId,
+          output.version,
           stderr,
         );
         await closeAfterFailure(stores, stderr);
@@ -145,13 +147,21 @@ async function executeCommand(
   command: MachineClientCommand,
   deps: Parameters<typeof provisionMachineClient>[0],
   stores: HostedAuthStore,
-): Promise<{ value: unknown; credentialClientId?: string }> {
+): Promise<
+  { kind: "credential"; value: unknown; clientId: string; version: number }
+  | { kind: "result"; value: unknown }
+> {
   if (command.action === "provision") {
     const value = await provisionMachineClient(deps, {
       name: command.name,
       allowedScopes: command.scopes,
     });
-    return { value, credentialClientId: value.clientId };
+    return {
+      kind: "credential",
+      value,
+      clientId: value.clientId,
+      version: 1,
+    };
   }
   if (command.action === "rotate") {
     const value = await rotateMachineClientSecret(
@@ -159,21 +169,31 @@ async function executeCommand(
       command.clientId,
       { graceSeconds: command.graceSeconds },
     );
-    return { value, credentialClientId: command.clientId };
+    return {
+      kind: "credential",
+      value,
+      clientId: command.clientId,
+      version: value.version,
+    };
   }
   if (command.action === "disable") {
-    return { value: await disableMachineClient(deps, command.clientId) };
+    return { kind: "result", value: await disableMachineClient(deps, command.clientId) };
   }
-  return { value: await stores.clientStore.listMachineClients() };
+  return { kind: "result", value: await stores.clientStore.listMachineClients() };
 }
 
 async function disableAfterOutputFailure(
   deps: Parameters<typeof disableMachineClient>[0],
   clientId: string,
+  credentialVersion: number,
   stderr: CliWritable,
 ): Promise<boolean> {
   try {
-    await disableMachineClient(deps, clientId);
+    if (!await disableExactCredentialVersion(
+      deps,
+      clientId,
+      credentialVersion,
+    )) throw new Error("credential version changed");
     await safeWrite(
       stderr,
       "captatum machine-client: credential_output_failed; client_disabled\n",
@@ -205,7 +225,6 @@ function machineClientId(value: string | undefined, action: string): string {
   }
   return value;
 }
-
 function parseGraceSeconds(value: string): number {
   if (!/^[0-9]+$/.test(value)) {
     throw new Error("graceSeconds must be a positive decimal integer");
@@ -224,7 +243,6 @@ function cliErrorCode(error: unknown): string {
   if (error instanceof Error && error.message.startsWith("usage:")) return "invalid_usage";
   return "operation_failed";
 }
-
 const invokedPath = process.argv[1];
 if (
   invokedPath

@@ -27,6 +27,9 @@ export interface HttpAppDeps {
   audit: AuditLoggerPort;
   allowedHosts: string[];
   allowedOrigins: string[];
+  /** Socket peers allowed to supply the effective client address used by auth
+   * rate limits. Forwarding headers from every other peer are ignored. */
+  trustedProxyCidrs: string[];
   /** Raw captatum_bulk use case; absent when CAPTATUM_BULK_ENABLED is off (hosted). */
   bulk?: CaptatumBulkMcpExecutor;
 }
@@ -71,7 +74,15 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
   assertHostedFlavor(deps.flavor);
   const oauthConfig: BridgeConfig = deps.bridge.config;
   const requestTimeout = REQUEST_TIMEOUT_MS;
-  const app = Fastify({ logger: false, bodyLimit: config.http.bodyLimitBytes, requestTimeout });
+  if (deps.trustedProxyCidrs.length === 0) {
+    throw new Error("Hosted HTTP requires a non-empty trusted proxy allowlist");
+  }
+  const app = Fastify({
+    logger: false,
+    bodyLimit: config.http.bodyLimitBytes,
+    requestTimeout,
+    trustProxy: deps.trustedProxyCidrs,
+  });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error, oauthConfig));
   app.get("/healthz", async () => ({ status: "ok" }));
 

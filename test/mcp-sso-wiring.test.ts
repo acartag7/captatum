@@ -116,6 +116,7 @@ async function setup() {
   const app = await createHttpApp({
     captatum, flavor: "hosted", bridge, authorizer, identity: stubIdentity, clock, audit,
     allowedHosts: [HOST], allowedOrigins: [ORIGIN],
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
   });
   return { app, oauthConfig, audit };
 }

@@ -46,6 +46,11 @@ Set the deploy-specific values:
   `https://claude.ai,https://chat.openai.com`). Never `*`.
 - `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS` — the public host/origin(s) clients
   reach (inbound DNS-rebinding protection).
+- `CAPTATUM_TRUSTED_PROXY_CIDRS` — exact IP/CIDR allowlist of the reverse-proxy
+  socket peer(s) allowed to supply client IPs for OAuth rate limits. A same-Pod
+  cloudflared sidecar is `127.0.0.1/32,::1/128`. Do not trust all proxies or a
+  whole private range; a direct peer outside this list has forwarding headers
+  ignored.
 - `CAPTATUM_SQLITE_PATH` — the OAuth-state SQLite path. Its parent is Captatum's private state directory and must be owned by the gateway user at mode `0700`; both database files must be `0600`. Captatum derives the client store as `<path>.clients`, so both land on the same mounted volume without sharing a database file or write lock. The image prepares `/data` as `node:node`/`0700`, including fresh named-volume initialization; for an existing bind mount, run `chown <gateway-uid>:<gateway-gid> /data && chmod 0700 /data` on the host before boot. Set the path to `/data/captatum.sqlite` as the templates do.
 
 ## 2. Cloudflare (Access + Tunnel)
@@ -126,7 +131,7 @@ go to stdout as JSON: `docker compose -f deploy/docker-compose.yml logs -f gatew
 | Symptom | Cause / fix |
 | --- | --- |
 | `HostedFlavorError` / container exits at boot | Set `CAPTATUM_FLAVOR=hosted` (the compose file sets it; if you bypass `.env`, ensure it's present). |
-| Boot aborts "Hosted requires …" | A required secret is missing: `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (`gen-oauth-keys.ts`), all four `CF_ACCESS_*`, and `MCP_ALLOWED_HOSTS` + `MCP_ALLOWED_ORIGINS`. |
+| Boot aborts "Hosted requires …" | A required secret is missing: `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` (`gen-oauth-keys.ts`), all four `CF_ACCESS_*`, `MCP_ALLOWED_HOSTS` + `MCP_ALLOWED_ORIGINS`, or the exact `CAPTATUM_TRUSTED_PROXY_CIDRS` peer allowlist. |
 | `summary` returns raw (`transform.provider: "none"`) | No transform provider: set `OPENROUTER_API_KEY` (or `OLLAMA_BASE_URL`). **Or** the caller's token lacks the `fetch:transform` scope (default `fetch:read` only allows `raw`). |
 | Tier-3 `render-unavailable` | The gateway can't reach the browser sidecar. `CAPTATUM_BROWSER_CDP_ENDPOINT` must be `http://127.0.0.1:9222` and the sidecar must share the gateway's network namespace (`network_mode: service:gateway` in compose). |
 | `~/.env` not picked up | compose `env_file` is `../.env` (repo root), and `environment:` overrides it — set secrets in `.env`, flavor/host/CDP via compose. |

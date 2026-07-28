@@ -19,6 +19,10 @@ the contract reference; this file is the security reasoning.
 
 - Browser and agent clients are outside the gateway trust boundary.
 - The gateway is the security boundary for scopes and tools.
+- Forwarded client IP headers cross the gateway boundary only through a socket
+  peer in the boot-validated `CAPTATUM_TRUSTED_PROXY_CIDRS` allowlist. The
+  Mac mini trusts only the loopback cloudflared sidecar. Untrusted peers cannot
+  choose DCR/token rate-limit identities with forwarding headers.
 - The DEFAULT hosted state is two local SQLite files (`node:sqlite`, no network):
   mcp-sso OAuth codes/tokens at `CAPTATUM_SQLITE_PATH`, and DCR/machine clients at
   the derived `<path>.clients`. The configured path's parent is the private Captatum
@@ -67,7 +71,9 @@ the contract reference; this file is the security reasoning.
   machine, or 1024 total clients. Disabled machine tombstones count toward the
   total. Valid use refreshes an interactive last-used epoch; only interactive
   rows unused for 30 days are swept. Existing clients remain usable during a
-  registration flood.
+  registration flood. Forwarded addresses are honored only from an explicit
+  trusted-proxy IP/CIDR allowlist, so the tunnel does not collapse every public
+  caller into one global bucket and a direct caller cannot spoof a new bucket.
 - The first stored-DCR boot records one durable migration marker and deletes all
   legacy auth codes and refresh families in that same transaction before the
   listener opens. The stored-DCR config also HMAC-derives a versioned
@@ -118,8 +124,9 @@ the contract reference; this file is the security reasoning.
   radius. The `page.route` SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
-  mode fails boot unless `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS` are
-  explicit; local mode must stay loopback-only.
+  mode fails boot unless `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, and the
+  exact `CAPTATUM_TRUSTED_PROXY_CIDRS` peer allowlist are explicit; local mode
+  must stay loopback-only.
 - Response guards: reject `Content-Length` > max before reading; stream through a
   counting `TransformStream`.
 - Linear HTML extraction (REDOS-5): every element/close-tag/comment/`<style>`/svg-`<text>`

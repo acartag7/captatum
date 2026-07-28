@@ -29,6 +29,7 @@ function validHostedEnv(): NodeJS.ProcessEnv {
     OAUTH_SIGNING_KEY_ID: "config-key",
     OAUTH_REDIRECT_ALLOWLIST: "https://client.test/callback",
     MCP_ALLOWED_ORIGINS: "https://client.test",
+    CAPTATUM_TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128",
     CF_ACCESS_ENABLED: "true",
     CF_ACCESS_AUDIENCE: "captatum-audience",
     CF_ACCESS_CERTS_URL: "https://team.cloudflareaccess.com/cdn-cgi/access/certs",

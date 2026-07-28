@@ -57,7 +57,7 @@ Unlike `WebFetch` (static GET + Turndown, which drops `<script>` JSON-LD/app-sta
   JSON-RPC channel. It does not serve web agents — they require the hosted HTTP
   server.
 - Auth is conditional on deployment flavor (see OAuth / Deployment): the hosted flavor requires gateway OAuth bearer tokens; a self-contained local-binary flavor runs without auth.
-- Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted boot requires explicit `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local defaults are loopback-only.
+- Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted boot requires explicit `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, and the exact reverse-proxy socket-peer allowlist `CAPTATUM_TRUSTED_PROXY_CIDRS`; local defaults are loopback-only.
 - **Discoverability:** the `captatum` tool `description` advertises every output mode (summary/raw/extract), provenance, `allowRender`, and `debug`, and the MCP server sends `instructions` on `initialize` (a capability guide for clients/agents). Both shapes share `createCaptatumMcpServer`, so both expose the same description + instructions. The two-shapes decision (hosted primary, local binary retained) is recorded in `docs/two-shapes.md`.
 
 ## Tool: `captatum`
@@ -598,10 +598,15 @@ transformModel: <model>
 <one JSON document>
 ```
 
-The provenance keys and header lines are in exactly the shown order. `title` and
-`contentQuality` are the only conditional header lines and keep their shown
-positions. There is one blank line after the provenance comment and one after
-the header. No extra header line is permitted. The bytes after the second blank
+The provenance keys and header lines are in exactly the shown order. Generic
+provenance additions such as `truncated` or `contentQuality` are suppressed for
+this profile; `contentQuality` belongs only in its fixed header position.
+`title` and `contentQuality` are the only conditional header lines and keep
+their shown positions. The title is stripped of controls/bidi/zero-width
+characters, clipped to 140 characters, and the same canonical value is emitted
+in `structuredContent`; a title that canonicalizes to empty is omitted from both
+channels. There is one blank line after the provenance comment and one after the
+header. No extra header line is permitted. The bytes after the second blank
 line are the complete extracted JSON document.
 
 The default `structuredContent` object has exactly these required keys, in any
@@ -619,6 +624,12 @@ closed too:
 - `transform` is exactly required `provider`, `model` plus optional `free`,
   `inTokens`, `outTokens`;
 - `warnings` and `errors` are empty on accepted success.
+
+A successful extract from a page classified `contentQuality:"low_value"` still
+has `status:"pass"`: the fixed `contentQuality` field carries that page-quality
+signal, and its otherwise-duplicate `low_value_extraction` advisory is omitted
+from `warnings` for this profile. Any independent warning or transform fallback
+remains `partial` and is not an accepted application-agent success.
 
 The text frame and structured receipt MUST agree on `output`, `finalUrl`,
 `tier`, `code`, `bytes`, `resolvedVia`, `platform.adapterId`,
@@ -743,16 +754,21 @@ rotation fails before its newly generated secret can reach stdout. Rotation
 keeps at most two active hashes, defaults to 300 seconds of overlap, and rejects
 any grace above the hard 600-second maximum.
 
-The raw credential appears once on stdout only. Required audit and diagnostics
-never contain the secret or its hash. stdout/stderr write, short-write, EPIPE,
-flush, and close errors are caught and reported as command failures rather than
-uncaught exceptions. Because a stream failure can occur after a transaction
-commits, a credential-output failure triggers a compensating CAS disable. When
-that succeeds, `list` shows the tombstone and `provision` creates the replacement.
-If the disable conflicts or fails, the command returns a distinct failure and
-instructs the operator to use `list` then `disable`; no raw database surgery is
-needed. Database-close failure is likewise non-throwing with respect to already
-emitted bytes but produces a non-zero command result.
+The raw credential appears once on stdout only. Required durable audit rows and
+best-effort stderr diagnostics never contain the secret or its hash. stdout and
+stderr write, short-write, EPIPE, callback, flush, and terminal-close paths are
+handled without uncaught exceptions or hangs. A stderr failure does not reverse
+an atomically committed mutation and does not turn a successfully delivered
+stdout credential into an ambiguous failed command; the durable SQLite audit is
+authoritative. Because a stdout failure can occur after a transaction commits,
+a credential-output failure triggers a compensating CAS disable bound to the
+exact mutation version whose secret was being emitted. It can never re-read and
+disable a newer concurrent rotation. When compensation succeeds, `list` shows
+the tombstone and `provision` creates the replacement. If the version conflicts
+or the disable fails, the command returns a distinct failure and instructs the
+operator to use `list` then `disable`; no raw database surgery is needed.
+Database-close failure is likewise non-throwing with respect to already emitted
+bytes but produces a non-zero command result.
 
 Captatum enables `clientCredentials` only with stored DCR and advertises
 `client_credentials`, `client_secret_basic`, and `client_secret_post` through
@@ -765,7 +781,15 @@ until their original expiry, at most 600 seconds after issuance.
 
 The open DCR route uses a fail-closed per-source fixed-window limiter: at most
 10 registration attempts per 10 minutes, with a bounded 4096-key in-memory map;
-an unavailable or malformed key is rejected. The SQLite adapter independently
+an unavailable or malformed key is rejected. Hosted boot requires a non-empty
+`CAPTATUM_TRUSTED_PROXY_CIDRS` IP/CIDR allowlist. Fastify accepts forwarded
+client addresses only from a socket peer in that allowlist; an untrusted direct
+peer's forwarding headers are ignored. The Mac mini's same-Pod cloudflared
+sidecar is trusted only as loopback. CIDRs are bounded to IPv4 `/24`-`/32` and
+IPv6 `/64`-`/128`; universal and broad private-network ranges are boot
+rejections. This keeps Internet callers in independent
+registration/token buckets without letting a client-controlled header select a
+bucket. The SQLite adapter independently
 enforces hard transactional storage caps of 1024 total clients, at most 1008
 interactive clients and at most 16 **active** machine clients. Disabled machine
 tombstones still count toward the total cap. New rows beyond a cap are rejected
@@ -781,6 +805,7 @@ The mcp-sso `Bridge` + Fastify adapter serve this flow end-to-end
 `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` +
 `OAUTH_SIGNING_KEY_ID` + a non-empty `OAUTH_REDIRECT_ALLOWLIST` +
 non-empty `MCP_ALLOWED_ORIGINS` +
+non-empty, valid `CAPTATUM_TRUSTED_PROXY_CIDRS` +
 `OAUTH_ISSUER` (absolute `https`) + `OAUTH_RESOURCE` (absolute URL) are
 validated by mcp-sso's `createBridgeConfig` (EC P-256 key shape, ≥32-char
 consent secret, https origins, valid TTLs, scope subset). Missing, empty, or
