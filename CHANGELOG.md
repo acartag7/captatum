@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.20.0] — 2026-07-28
+
+Headless applications can now authenticate to hosted Captatum without an
+interactive browser. This release adds persistent, operator-provisioned machine
+credentials while keeping the existing stateless JSON `/mcp` request/response
+contract stable for application-agent.
+
+- **feat(auth): machine-to-machine OAuth.** Hosted metadata now advertises
+  `client_credentials` and `client_secret_basic`. A scope-capped machine client
+  receives a 600-second bearer token with no refresh token and can call the
+  existing `captatum` tool.
+- **feat(ops): complete machine-client lifecycle.** The container CLI provisions,
+  rotates, disables, and lists machine clients. Secrets are returned once,
+  stored only as verifiable hashes, rotated with a bounded overlap, and coupled
+  atomically to their durable audit record.
+- **fix(auth): persistent, bounded stored DCR.** Interactive and machine clients
+  survive restarts. Registration storage has a hard capacity, stale interactive
+  clients are swept, corrupt rows fail closed as `invalid_client`, and concurrent
+  rotations use versioned compare-and-swap.
+- **fix(upgrade): no legacy-grant resurrection.** The stored-DCR migration
+  invalidates pre-cutover authorization grants, and grant generations prevent a
+  rollback/re-upgrade from reviving grants created by an older binary.
+- **harden(deploy): single-writer SQLite cutover.** v0.20.x supports one hosted
+  gateway replica. The upgrade and rollback both require a no-overlap `Recreate`
+  rollout, private state ownership/modes, and authenticated reverse-proxy
+  forwarding metadata.
+- **contract:** the successful `output:"extract", debug:false`
+  application-agent envelope is frozen. This feature is additive for headless
+  clients, but the stateless-to-stored DCR switch is breaking for existing
+  interactive clients: they must register once again after the upgrade.
+
+Checks: `pnpm run check`, 813 unit tests, 60 integration tests, 86 frozen
+acceptance tests, build, and smoke passed on the merged implementation. The
+time-bounded production-audit disposition for two ineligible transitive patches
+is recorded in `docs/dependency-ledger.md`.
+
 ## [0.11.4] — 2026-07-06
 
 A small patch: CI reliability, OAuth-rejection UX, and an auth JSON-RPC error-code collision. One CONTRACT change to the auth-failed JSON-RPC error code (`-32001` → `-32003`, see below); happy-path behavior is unchanged.
