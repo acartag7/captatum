@@ -47,7 +47,7 @@ Pick the set that covers the funnel (5 is a good default):
 | --- | --- |
 | **first-time developer** | Never used captatum. Get a successful first result in minutes. Where do you get stuck? |
 | **MCP-client integrator** | Wire Claude Desktop / Cursor / Claude Code. Config snippet, scopes (`fetch:read` vs `fetch:transform`), provider requirement, local vs hosted. |
-| **self-host / DevOps** | Deploy for a team (docker-compose, secrets, Cloudflare, SQLite/TiDB, browser sidecar). Reproducible? What's missing? |
+| **self-host / DevOps** | Deploy one gateway replica for a team (docker-compose, secrets, Cloudflare, SQLite); verify Tier-3 stays disabled unless an isolated browser workload with enforced egress containment exists. Reproducible? What's missing? |
 | **security reviewer** | SSRF, browser sandbox, OAuth, prompt-injection, supply chain. Are the docs honest about limits? |
 | **product strategist** | Adopt vs WebFetch/Firecrawl/Jina. Is the value prop sharp? What features/extensions/positioning make it a must-have? |
 

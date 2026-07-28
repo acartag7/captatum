@@ -53,10 +53,10 @@ not concretes.
   `src/infrastructure/<platform>/` + one registry line + one fixture. Not part of
   the public contract.
 - **`StorePort`** — OAuth state only (auth codes + refresh tokens, hashed). The
-  hosted flavor uses **TiDB via `mysql2`** and the repo ships migrations/store
-  code for that path. A **`node:sqlite`** store is also shipped and tested for
-  local/dev OAuth-state use, but the current local-binary stdio bridge has no
-  OAuth and does not open a store.
+  hosted flavor uses **`node:sqlite`** in a private state directory and supports
+  one gateway replica. Captatum keeps OAuth state and DCR/machine-client state in
+  separate SQLite files. The local-binary stdio bridge has no OAuth and opens
+  neither store.
 - **`ModelRouterPort`** — `pick(task, inputTokens, options?): { provider, model?, free?, reason? }` +
   `feedback(model, score)` for a deterministic per-model EMA. `options.localOnly`
   is used when fetched content has sensitive/non-public signals. Implemented by
@@ -118,8 +118,15 @@ and the MCP route. `src/interfaces/http/mcp-route.ts` authenticates every
 `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`,
 `enableJsonResponse: true`) and a fresh MCP server for that request, and enables
 SDK Host/Origin DNS-rebinding protection. Hosted mode requires explicit
-`MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local mode falls back to loopback
-host values. `GET`/`DELETE /mcp` return 405. Tool registration is in
+`MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, and an exact
+`CAPTATUM_TRUSTED_PROXY_CIDRS` socket-peer allowlist plus the edge-injected
+`CAPTATUM_PROXY_AUTH_SECRET`. Fastify ignores forwarded client addresses unless
+both controls match, so OAuth rate-limit identities are neither globally
+collapsed behind the tunnel nor caller/co-tenant-selected. The gateway erases
+the authenticator from parsed and raw header views before route code runs and
+rejects unauthenticated forwarded address, host, protocol, and port headers.
+`GET`/`DELETE /mcp`
+return 405. Tool registration is in
 `src/interfaces/mcp/`; the tool schema has `additionalProperties: false`, and the
 default output is provider-conditional (`raw` with no provider, `summary` with one).
 

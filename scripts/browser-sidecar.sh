@@ -13,7 +13,27 @@
 # (package.json); a mismatch can break the CDP protocol.
 set -euo pipefail
 
-PORT="${CAPTATUM_BROWSER_CDP_PORT:-9222}"
+if [ "${CAPTATUM_BROWSER_CDP_PORT+x}" = "x" ]; then
+  PORT="${CAPTATUM_BROWSER_CDP_PORT}"
+else
+  PORT="9222"
+fi
+if [ "${CAPTATUM_BROWSER_CDP_BIND_ADDRESS+x}" = "x" ]; then
+  BIND_ADDRESS="${CAPTATUM_BROWSER_CDP_BIND_ADDRESS}"
+else
+  BIND_ADDRESS="127.0.0.1"
+fi
+case "${PORT}" in
+  *[!0-9]*|"") echo "browser-sidecar: invalid CDP port" >&2; exit 1 ;;
+esac
+if [ "${PORT}" -lt 1 ] || [ "${PORT}" -gt 65535 ]; then
+  echo "browser-sidecar: invalid CDP port" >&2
+  exit 1
+fi
+case "${BIND_ADDRESS}" in
+  127.0.0.1) ;;
+  *) echo "browser-sidecar: invalid CDP bind address" >&2; exit 1 ;;
+esac
 
 # Locate the bundled Chromium. The mcr.microsoft.com/playwright image lays it out
 # at /ms-playwright/chromium-<ver>/chrome-linux/chrome; fall back to PATH names.
@@ -24,16 +44,13 @@ if [ -z "${CHROME:-}" ]; then
   exit 1
 fi
 
-# Bind loopback only: pods that share one network namespace (e.g. the gateway
-# + browser sidecar) reach each other via 127.0.0.1, so the gateway reaches the
-# browser on 127.0.0.1:9222 (same pattern as the tunnel -> gateway 127.0.0.1:3000
-# hop). Loopback-only also keeps CDP off the pod's network interface. (Chromium
-# binds 127.0.0.1 by default; --remote-debugging-address is intentionally NOT set
-# to 0.0.0.0.)
+# Chromium remains loopback-only. The production browser Pod exposes it through
+# the image's fixed, connection-capped CDP relay in a second no-secret container.
 exec "${CHROME}" \
   --headless=new \
   --no-sandbox \
   --remote-debugging-port="${PORT}" \
+  --remote-debugging-address="${BIND_ADDRESS}" \
   --disable-gpu \
   --disable-dev-shm-usage \
   --disable-background-networking \

@@ -2,6 +2,10 @@ import type { ProvenanceError, Result, TransformInfo } from "../../domain/result
 import { classifyAccess, classifyContentType, hasContent, type AccessInfo, type ContentType } from "../../application/classify.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 import { shapeRenderDiagnostics } from "./egress-shaping.ts";
+import {
+  canonicalMcpTitle,
+  isApplicationAgentProfile,
+} from "./application-agent-profile.ts";
 
 export type Status = "pass" | "partial" | "fail";
 
@@ -17,8 +21,14 @@ export type Status = "pass" | "partial" | "fail";
 export function buildStructuredContent(result: Result, debug: boolean): Record<string, unknown> {
   const contentType = classifyContentType(result);
   const access = classifyAccess(result);
-  const { errors, warnings } = splitErrors(result);
+  const profile = isApplicationAgentProfile(result, debug);
+  const split = splitErrors(result);
+  const warnings = profile
+    ? split.warnings.filter((warning) => warning.code !== "low_value_extraction")
+    : split.warnings;
+  const errors = split.errors;
   const status = classifyStatus(result, warnings);
+  const title = canonicalMcpTitle(result.title);
 
   const lean: Record<string, unknown> = {
     schemaVersion: result.schemaVersion,
@@ -26,7 +36,7 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
     status,
     url: redactSignedQueryParams(result.url),
     finalUrl: redactSignedQueryParams(result.finalUrl),
-    title: result.title,
+    title,
     output: result.output,
     ...(result.outputRequested !== undefined ? { outputRequested: result.outputRequested } : {}),
     contentType,

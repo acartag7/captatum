@@ -19,6 +19,13 @@ RUN corepack enable \
 
 COPY src ./src
 
+# Fresh named volumes copy the image directory's ownership/mode. Prepare the
+# private Captatum state boundary before dropping privileges so USER node can
+# create both SQLite files without a first-boot EACCES.
+RUN mkdir -p /data \
+  && chown node:node /data \
+  && chmod 0700 /data
+
 USER node
 
 EXPOSE 3000

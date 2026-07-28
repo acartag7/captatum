@@ -7,9 +7,10 @@ the contract reference; this file is the security reasoning.
 
 ## Assets
 
-- OAuth signing keys and token hashes (hosted flavor only).
-- OAuth-state store credentials — the SQLite file path (default backend), or TiDB
-  credentials when `TIDB_HOST` is set (hosted flavor only).
+- OAuth signing keys, token hashes, stored client registrations, and machine-client secret hashes (hosted flavor only).
+- Raw machine-client secrets exist only in the operator process at provision/rotation output and the caller's secret manager; Captatum never persists or logs them.
+- OAuth-state store files — the OAuth SQLite path plus its derived `.clients`
+  companion. TiDB is rejected for the v0.20.0 transition release.
 - Audit events.
 - **Fetched page content is UNTRUSTED DATA, never an asset to protect as
   instructions.** It is treated as hostile text throughout.
@@ -18,12 +19,32 @@ the contract reference; this file is the security reasoning.
 
 - Browser and agent clients are outside the gateway trust boundary.
 - The gateway is the security boundary for scopes and tools.
-- The DEFAULT hosted OAuth-state store is a local SQLite file (`node:sqlite`,
-  no network) — the OAuth codes/tokens live in a file on the gateway's disk, so
-  it has no DB network trust boundary. The optional TiDB scale path (when
-  `TIDB_HOST` is set) is reachable only from the captatum task security group on
-  `4000/tcp` and reuses an existing MySQL-compatible instance in the private
-  infrastructure; its host/account live in the private infra repo, not here.
+- Forwarded client IP headers cross the gateway boundary only when the socket
+  peer is in the boot-validated `CAPTATUM_TRUSTED_PROXY_CIDRS` allowlist **and**
+  `X-Captatum-Proxy-Auth` timing-safe-matches the 32-byte
+  `CAPTATUM_PROXY_AUTH_SECRET`. Cloudflare overwrites that internal header at
+  the edge; the gateway removes it from parsed and raw/distinct header views
+  before route dispatch. The same gate covers `Forwarded`, every Fastify
+  `X-Forwarded-*` authority (`For`, `Host`, `Proto`, and `Port`), `X-Real-IP`,
+  and `CF-Connecting-IP`, and removes all of them on rejection. The production
+  browser runs in a separate Pod/network namespace from gateway + cloudflared,
+  receives no secret, and accepts CDP only from the gateway Pod. A trusted init
+  container installs IPv4 and IPv6 default-drop OUTPUT rules inside that Pod
+  network namespace before browser startup, because the production kube-router
+  does not enforce external egress denial. The browser therefore cannot observe
+  the proxy hop, bind gateway port 3000 during a container restart, or originate
+  Internet traffic.
+- The DEFAULT hosted state is two local SQLite files (`node:sqlite`, no network):
+  mcp-sso OAuth codes/tokens at `CAPTATUM_SQLITE_PATH`, and DCR/machine clients at
+  the derived `<path>.clients`. The configured path's parent is the private Captatum
+  state directory: every existing component is non-symlink and a directory, the
+  state directory is `0700`, and both regular files are `0600`; the directory
+  and files must be owned by the running effective UID/GID. Separate owned files
+  prevent cross-store writer locks. The v0.20.0 release is one hosted replica;
+  a non-empty `TIDB_HOST` or any non-legacy partial TiDB configuration is a
+  pre-side-effect boot failure. The exact dormant defaults from the previous
+  SQLite `.env.example` (`4000`, `captatum`, `captatum_rw`) are inert without a
+  host so an existing SQLite deployment does not become an accidental outage.
 - The **local-binary flavor has no network trust boundary** — it is single-user /
   single-agent only and runs without auth. It must never be exposed on a network.
   Its entrypoint is the stdio bridge (`src/interfaces/mcp/stdio-bridge.ts`), which
@@ -44,6 +65,45 @@ the contract reference; this file is the security reasoning.
   Session IDs are never auth.
 - Per-request scope enforcement: `fetch:read` default, `fetch:transform` to use
   the Transform stage.
+- Machine authentication is opt-in only with stored DCR. Machine clients are
+  provisioned, rotated, listed, and disabled out of band through one local
+  operator CLI; there is no HTTP provisioning endpoint and open DCR rejects
+  machine-shaped registrations. Secrets are 256-bit mcp-sso credentials returned
+  once, stored only as timing-safe-verifiable SHA-256 hashes, scope-capped at
+  provisioning, and rotated with at most two active hashes. Provision is an
+  insert; rotate/disable are versioned CAS updates. Each successful mutation and
+  its required durable metadata-only audit row commit in one SQLite transaction.
+  Rotation overlap defaults to 300 seconds and is hard-capped at 600. Disable
+  clears accepted hashes and blocks future grants; already-issued stateless
+  bearer JWTs expire naturally within 600 seconds. The access token carries
+  `sub == client_id` plus `gty: client_credentials` and no refresh token.
+  Malformed/unknown/policy-invalid rows map to `null`, so mcp-sso returns
+  `invalid_client` rather than 500.
+- Open stored DCR is bounded twice: a fail-closed per-source limiter permits at
+  most 10 attempts per 10 minutes with at most 4096 live limiter keys, and the
+  SQLite transaction rejects a new row above 1008 interactive, 16 active
+  machine, or 1024 total clients. Disabled machine tombstones count toward the
+  total. Valid use refreshes an interactive last-used epoch; only interactive
+  rows unused for 30 days are swept. Existing clients remain usable during a
+  registration flood. Forwarded addresses are honored only for the conjunction
+  of an explicit proxy IP/CIDR allowlist and the edge-injected proxy
+  authenticator, so the tunnel does not collapse every public caller into one
+  global bucket and a direct caller or compromised co-tenant cannot spoof a new
+  bucket.
+- The first stored-DCR boot records one durable migration marker and deletes all
+  legacy auth codes and refresh families in that same transaction before the
+  listener opens. The stored-DCR config also HMAC-derives a versioned
+  consent/flow signing secret, so pending pre-upgrade browser consent or
+  upstream-flow JWTs cannot mint a new legacy authorization code after cutover.
+  mcp-sso additionally stamps stored-DCR auth codes, refresh families, and
+  refresh-token rows with durable grant generation `1`. Code consumption,
+  refresh rotation, and prior-scope accumulation require that generation;
+  refresh checks both family and token inside its transaction. A rolled-back
+  older binary omits the nullable columns and therefore creates legacy `NULL`
+  grants that fail closed after re-upgrade, including when their client id
+  names an existing stored client. Genuine generation-1 sessions survive
+  ordinary restarts. A first-cutover failure aborts boot. Legacy access JWTs
+  get only their existing 600-second natural-expiry grace.
 - Rebinding-proof outbound `guardedFetch` (the single egress primitive):
   - scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and
     keep sanitized URL values credential-free.
@@ -70,25 +130,40 @@ the contract reference; this file is the security reasoning.
   exempt, so a blocklisted vendor apex that IS the requested page (amplitude.com,
   hotjar.com, …) still loads and its own links survive the strip. WebSockets are closed;
   Service Workers are disabled; downloads are blocked; render-byte cap is
-  enforced; the browser runs with an empty environment. **Sandbox model: an
+  enforced; the browser receives no secret-bearing environment. **Sandbox model: an
   in-process launch keeps the OS sandbox ON (`chromiumSandbox` defaults true —
   `--no-sandbox` in-process is a release blocker). The hosted path instead runs
-  Chromium in a separate sidecar container connected over CDP
+  Chromium in a separate browser workload connected over CDP
   (`CAPTATUM_BROWSER_CDP_ENDPOINT`, `Dockerfile.browser`, `scripts/browser-sidecar.sh`);
   there `--no-sandbox` is acceptable because the container is the isolation
   boundary. The published gateway image (`Dockerfile`) ships **no browser binary**,
   so in-process Tier-3 is structurally impossible there — a misconfigured hosted
   gateway degrades to `render-unavailable` rather than launching Chromium inside the
-  OAuth-key blast radius. Blast-radius caveat: the fetcher-fulfillment control above closes the
-  page-content SSRF path, but on the current hosted deploy it does not by itself
-  fully bound a browser-process compromise — that needs separate network/role
-  isolation for the sidecar, tracked as its own infra control. Either way the
+  OAuth-key blast radius. Production additionally places the browser in its own
+  Pod/network namespace, runs it non-root with every Linux capability dropped,
+  and permits CDP ingress only from the gateway Pod. Before either
+  browser-boundary container starts, a digest-pinned trusted init container
+  flushes both Pod-netns OUTPUT chains, sets them default-drop, and allows only
+  loopback plus established replies. The untrusted containers receive no
+  `NET_ADMIN` capability, so they cannot relax those rules. A
+  no-secret, no-capability relay in that same browser boundary exposes fixed Pod
+  port 9223 only to forward into Chromium's loopback-only TCP/9222 listener; it
+  has no configurable target and caps concurrent connections. The
+  gateway accepts only an HTTP/9222 Kubernetes Service origin with exact
+  `<service>.<namespace>.svc.cluster.local` DNS-1123 shape; parsing and
+  allowlisting happen before any hosted state side effect. The deployer owns the
+  concrete Service name. Loopback CDP is rejected because it recreates the
+  shared-network-namespace attack. This
+  prevents both packet sniffing and sibling port rebinding during a gateway restart.
+  The cluster node/kernel and principals allowed to mutate the Pod, its labels,
+  or ingress NetworkPolicy remain inside the operator trust boundary. Either way the
   browser never runs in-process with `--no-sandbox` inside the gateway's blast
   radius. The `page.route` SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
-  mode fails boot unless `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS` are
-  explicit; local mode must stay loopback-only.
+  mode fails boot unless `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, the exact
+  `CAPTATUM_TRUSTED_PROXY_CIDRS` peer allowlist, and the
+  `CAPTATUM_PROXY_AUTH_SECRET` are explicit; local mode must stay loopback-only.
 - Response guards: reject `Content-Length` > max before reading; stream through a
   counting `TransformStream`.
 - Linear HTML extraction (REDOS-5): every element/close-tag/comment/`<style>`/svg-`<text>`
@@ -207,16 +282,29 @@ the contract reference; this file is the security reasoning.
 - Write an audit event for every tool call.
 - Treat fetched content as untrusted data — never instructions (prompt-injection
   control).
+- Fetched titles enter both MCP text and structured presentation channels
+  through one Unicode-category allowlist. Only `L`, `M`, `N`, `P`, `S`, and
+  `Zs` code points survive before a 140-code-point clip; Unicode controls,
+  formats (including C1, bidi, and zero-width controls), line/paragraph
+  separators, surrogates, private-use, and unassigned code points cannot forge
+  a header line or reorder hidden title text. The internal fetched Result stays
+  unchanged as untrusted data.
 - **`captatum_bulk` fan-out** is bounded per-call by the BulkGuard caps (see the
   "Bulk fan-out (captatum_bulk)" section). The orchestrator composes the single-
   URL use case per seed and **adds no egress path**: SSRF, Tier-3 in-browser, and
   prompt-injection controls are enforced per-seed, unchanged. Amplification is
   fixed at 1 per caller-supplied URL (no discovery/recursion/`depth`).
 
+## Machine-client STRIDE
+
+| Asset | STRIDE | Threat | Required control | Residual |
+| --- | --- | --- | --- | --- |
+| Raw machine-client secret | Information disclosure / Spoofing | A stolen secret can mint bearer tokens as the machine client. Unlike refresh-token replay, repeated use of a machine secret produces no cryptographic theft signal and cannot identify which holder used it. | Secret is returned once, never logged, persisted only as SHA-256; scope is capped; rotate uses a bounded two-secret overlap and disable clears accepted hashes; access tokens live at most 600 seconds. Operator rotation is the recovery for suspected theft. | Theft remains undetectable until external evidence or operator suspicion triggers rotate/disable. Rotation limits future use but cannot recall bearer JWTs already issued; they expire within 600 seconds. |
+
 ## Auth Limits
 
 - **Library boundary:** the hosted OAuth 2.1 / DCR / PKCE / Cloudflare-Access
-  stack is owned by the **mcp-sso** library (`mcp-sso@0.2.0`, acartag7/mcp-sso) —
+  stack is owned by the **mcp-sso** library (`mcp-sso@0.3.2`, acartag7/mcp-sso) —
   captatum's own OAuth, extracted + hardened there. captatum's auth surface is
   reduced to: building a validated `BridgeConfig` from env
   (`src/application/mcp-sso-config.ts`), composing the `Bridge` +
@@ -321,6 +409,14 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
 
 - Tier-3 is the maximal SSRF surface. The in-browser controls are mandatory, not
   advisory; a Tier-3 path that drops any of them is a release blocker.
+- The production browser isolation depends on the Kubernetes Pod/network
+  namespace boundary, its Pod-netns firewall, and ingress NetworkPolicy. The
+  firewall is not the cluster's measured-broken egress NetworkPolicy path. A
+  principal that controls the node/kernel, namespace workload labels, or policy
+  objects is already inside the deployment trust boundary. A compromised
+  renderer may still forge rendered page output, but it receives no gateway
+  secret and cannot originate page network egress; fetched content remains
+  untrusted regardless.
 - **TIER3-POST — page-authored upstream egress (#111).** Tier-3 now forwards a
   first-party POST body (Notion/Jira hydrate via POST), which is untrusted page content
   egressed to a first-party endpoint. A compromised/XSSed page on victim.com could amplify
@@ -372,13 +468,14 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   SNI and certificate verification. This keeps SSRF controls intact but means the
   `wreq-js` TLS/JA3+JA4 anti-bot benefit is only active for plain HTTP until an
   HTTPS checked-IP + original TLS identity path is proven.
-- Single-node store: the default SQLite file (and single-node TiDB) is not HA.
-  SQLite suits single-instance / small-team hosted deploys; select TiDB for scale.
-- TiDB transaction lifecycle (availability): the pooled-connection transaction
-  (`getConnection` → `beginTransaction` → commit/rollback → `release`) releases its
-  connection on every exit path including a `beginTransaction` failure, so the small
-  (`connectionLimit:5`) pool cannot be exhausted by a handful of begin errors and
-  stall every OAuth store operation (auth outage via pool exhaustion).
+- Single-node store: the v0.20.0 SQLite file pair is not HA and the release
+  intentionally supports one replica only. TiDB returns only with an explicit
+  transfer plan, distributed client-mutation serialization, and real
+  multi-replica acceptance tests.
+- SQLite path-race residual: `node:sqlite` exposes no `O_NOFOLLOW`/caller-fd open,
+  so pre-open component checks plus post-open inode/mode checks are defense-in-depth,
+  not an absolute no-TOCTOU guarantee. A same-UID process able to swap entries in
+  the `0700` state directory is already inside the gateway/OAuth-key trust boundary.
 - OpenRouter API-key egress is `https://`-only: a non-loopback `http://`
   `OPENROUTER_BASE_URL` is rejected at provider construction (and the transport
   refuses an authorization header over cleartext http to a non-loopback host), so a
@@ -516,7 +613,7 @@ and a caller who fetches a presigned SOURCE url is still blocked at the source c
   which drives a real Chromium through the fetcher-fulfillment path and asserts the
   browser makes no direct egress.
 - No public hosted deployment before `OAUTH_SIGNING_PRIVATE_JWK` injection, the
-  TiDB OAuth migration/provisioning, explicit `MCP_ALLOWED_HOSTS` /
+  one-time stored-DCR SQLite migration, explicit `MCP_ALLOWED_HOSTS` /
   `MCP_ALLOWED_ORIGINS`, and authenticated client compatibility tests pass.
 - Tier-3 is **shell-gated**, not unconditional: `allowRender` defaults **true**
   (single-fetch) / **false** (bulk), but a render fires only when Tier-1 extraction

@@ -1,5 +1,12 @@
 import { isLoopbackHost } from "./domain/policy.ts";
 import { BULK_GUARD_CEILINGS } from "./domain/bulk-policy.ts";
+import {
+  parseProxyAuthSecret,
+  parseTrustedProxyCidrs,
+} from "./domain/trusted-proxy.ts";
+
+const DNS_1123_LABEL =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const config = {
   source: {
@@ -16,6 +23,12 @@ export const config = {
     forwardDesignVersion: "2026-07-28",
     allowedHosts: () => envList("MCP_ALLOWED_HOSTS"),
     allowedOrigins: () => envList("MCP_ALLOWED_ORIGINS"),
+    trustedProxyCidrs: () => parseTrustedProxyCidrs(
+      envString("CAPTATUM_TRUSTED_PROXY_CIDRS", ""),
+    ),
+    proxyAuthSecret: () => parseProxyAuthSecret(
+      envString("CAPTATUM_PROXY_AUTH_SECRET", ""),
+    ),
     /** #45: "clientId=profile,..." mapping for client-aware output shaping (parsed by
      *  src/application/client-profile.ts). Unknown clientIds → the default shape. */
     clientProfiles: () => envString("CAPTATUM_CLIENT_PROFILES", ""),
@@ -83,9 +96,11 @@ export const config = {
   render: {
     allowRenderDefault: false,
     timeoutMs: 20000,
-    /** CDP endpoint of a browser sidecar (e.g. "http://localhost:9222"). If set, Tier-3 connects to a Chromium in its own container instead of launching one in-process (blast-radius separation). */
-    cdpEndpoint: () => envString("CAPTATUM_BROWSER_CDP_ENDPOINT", ""),
-    /** Chromium sandbox for in-process launch (default true — threat model: never --no-sandbox). Only relevant when no sidecar is configured. */
+    /** CDP origin of the isolated browser workload. Empty disables hosted Tier-3. */
+    cdpEndpoint: () => parseCdpEndpoint(
+      envString("CAPTATUM_BROWSER_CDP_ENDPOINT", ""),
+    ),
+    /** Chromium sandbox for in-process launch (default true — threat model: never --no-sandbox). Only relevant when no CDP workload is configured. */
     chromiumSandbox: () => envString("CAPTATUM_BROWSER_INPROCESS_SANDBOX", "true") === "true",
     /** DOS-2: max concurrent Tier-3 renders. Chromium is the expensive resource, so
      * bound it independently of the global admission cap (default 2). */
@@ -96,20 +111,6 @@ export const config = {
     /** #111: per-render concurrency cap on concurrent first-party POSTs (Chromium's per-origin
      *  limit). A POST over the cap is aborted (tryAcquire, never awaited) as render_concurrency_limit. */
     postConcurrency: () => envPositiveInteger("CAPTATUM_RENDER_POST_CONCURRENCY", 6),
-  },
-  tidb: {
-    host: () => envString("TIDB_HOST", ""),
-    port: () => envPositiveInteger("TIDB_PORT", 4000),
-    database: () => envString("TIDB_DATABASE", "captatum"),
-    user: () => envString("TIDB_USER", ""),
-    password: () => envString("TIDB_PASSWORD", ""),
-    sslCa: () => envString("TIDB_SSL_CA", ""),
-  },
-  store: {
-    /** Default hosted OAuth-state store when no TIDB_HOST is set: a single SQLite
-     *  file (node:sqlite, no server). Parent dir is created at boot. TiDB remains
-     *  the optional scale path — set TIDB_HOST to select it. */
-    sqlitePath: () => envString("CAPTATUM_SQLITE_PATH", "./data/captatum.sqlite"),
   },
   bulk: {
     /** Hosted captatum_bulk gate (BULK-GATE): ON as of PR 3 — the LimitingFetcher
@@ -143,6 +144,40 @@ export const config = {
     quotaSeedLimit: () => envPositiveInteger("CAPTATUM_BULK_QUOTA_SEED_LIMIT", 300),
   },
 };
+
+export function parseCdpEndpoint(raw: string): string | undefined {
+  const value = raw.trim();
+  if (!value) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("CAPTATUM_BROWSER_CDP_ENDPOINT is not a valid URL");
+  }
+  if (
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.protocol !== "http:" ||
+    parsed.port !== "9222" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    !isKubernetesServiceHost(parsed.hostname)
+  ) {
+    throw new Error("CAPTATUM_BROWSER_CDP_ENDPOINT is not an allowed CDP origin");
+  }
+  return parsed.origin;
+}
+
+function isKubernetesServiceHost(hostname: string): boolean {
+  const labels = hostname.split(".");
+  return labels.length === 5 &&
+    DNS_1123_LABEL.test(labels[0] ?? "") &&
+    DNS_1123_LABEL.test(labels[1] ?? "") &&
+    labels[2] === "svc" &&
+    labels[3] === "cluster" &&
+    labels[4] === "local";
+}
 
 function envString(name: string, fallback: string): string {
   const value = process.env[name];

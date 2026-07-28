@@ -7,6 +7,7 @@ import type {
   RenderOutput,
   RenderPort,
 } from "../../application/ports/renderer.ts";
+import { parseCdpEndpoint } from "../../config.ts";
 import { streamFromBytes } from "../http/body.ts";
 import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { RenderRouteState } from "./route-state.ts";
@@ -25,9 +26,9 @@ import type {
 export interface PlaywrightRendererDeps {
   loadPlaywright?: () => Promise<PlaywrightModule>;
   guard?: BrowserUrlGuard;
-  /** CDP endpoint for sidecar mode (e.g. "http://localhost:9222"). If set, the renderer connects to a long-lived Chromium in its own container instead of launching one in-process. */
+  /** Allowlisted CDP endpoint for the isolated hosted browser workload. If set, the renderer connects to long-lived Chromium instead of launching one in-process. */
   cdpEndpoint?: string;
-  /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is only for a sidecar-less transitional deploy. */
+  /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is transitional local-only behavior. */
   chromiumSandbox?: boolean;
   /** Post-load settle: networkidle cap, content-stability min dwell, stable threshold (ms).
    *  The content-aware settle catches setTimeout/hydration content networkidle misses. Defaults 5000 / 1500 / 400. */
@@ -50,7 +51,7 @@ export class PlaywrightRenderer implements RenderPort {
   constructor(deps: PlaywrightRendererDeps = {}) {
     this.loadPlaywright = deps.loadPlaywright ?? defaultLoadPlaywright;
     this.guard = deps.guard ?? new P1BrowserUrlGuard();
-    this.cdpEndpoint = deps.cdpEndpoint;
+    this.cdpEndpoint = parseCdpEndpoint(deps.cdpEndpoint ?? "");
     this.chromiumSandbox = deps.chromiumSandbox ?? true;
     this.settleMs = deps.settleMs ?? 5000; // #110: was 3000; both waits return early when stable, so a larger cap only helps slow-hydrating SPAs (total settle bounded by render timeoutMs).
     this.settleMinDwellMs = deps.settleMinDwellMs ?? 1500;
@@ -68,9 +69,6 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        // TIER3-CDP-1: CDP endpoint must be loopback (operator-set, validate); sidecar Chromium is reused, never closed here.
-        let cdpHost = ""; try { cdpHost = new URL(this.cdpEndpoint).hostname; } catch {}
-        if (!["localhost", "127.0.0.1", "[::1]"].includes(cdpHost)) throw new RenderError("render_unavailable", "CDP endpoint must be loopback");
         if (!this.cdpBrowser) this.cdpBrowser = await playwright.chromium.connectOverCDP(this.cdpEndpoint);
         browser = this.cdpBrowser;
       } else {
@@ -135,7 +133,7 @@ export class PlaywrightRenderer implements RenderPort {
       if (onSignalAbort && input.signal) input.signal.removeEventListener("abort", onSignalAbort);
       await closeQuietly(page);
       await closeQuietly(context);
-      // Only close a browser we launched; the CDP sidecar is shared + long-lived.
+      // Only close a browser we launched; the remote CDP browser is shared + long-lived.
       if (ownsBrowser) await closeQuietly(browser);
     }
   }

@@ -8,8 +8,9 @@ persistent volume for the SQLite store. Cloudflare Access + Tunnel sit in front.
 1. **New project → deploy from image**: `ghcr.io/acartag7/captatum:<tag>` (use the
    latest release tag). (Alternatively, connect this repo and Railway builds from
    `Dockerfile`; `railway.toml` sets the start command + healthcheck.)
-2. **Add a volume**: Settings → Volumes → mount at `/data`. Set
-   `CAPTATUM_SQLITE_PATH=/data/captatum.sqlite`.
+2. **Add a volume**: Settings → Volumes → mount at `/data`. It must be writable by
+   the gateway user and mode `0700`. Set `CAPTATUM_SQLITE_PATH=/data/captatum.sqlite`;
+   the client store is created beside it as `/data/captatum.sqlite.clients`.
 3. **Environment variables**: paste your `.env` (see `deploy/README.md` §1). Generate
    the OAuth keys with `node --no-warnings scripts/gen-oauth-keys.ts` first.
 4. **Public domain**: Railway assigns one; point `OAUTH_ISSUER` / `OAUTH_RESOURCE` /
@@ -17,21 +18,23 @@ persistent volume for the SQLite store. Cloudflare Access + Tunnel sit in front.
 5. **Cloudflare Access + Tunnel**: front the Railway domain with Cloudflare so the
    `/oauth/authorize*` consent screen is behind Access (required at boot). Put the
    Access `CF_ACCESS_*` values in the env.
+6. **Trusted proxy peer**: set `CAPTATUM_TRUSTED_PROXY_CIDRS` only to Railway's
+   documented final proxy peer IP/CIDR as observed by the service. If Railway
+   cannot provide a stable narrow peer range, this hosted auth release cannot be
+   deployed there securely; do not use `0.0.0.0/0` or a private-range wildcard.
+7. **Authenticated forwarding**: set `CAPTATUM_PROXY_AUTH_SECRET` and configure
+   the Cloudflare hostname rule to **Set static** `X-Captatum-Proxy-Auth` to the
+   same value. Railway's peer range alone is not forwarding authority.
 
-## Tier-3 (optional JS rendering)
+## Tier-3 rendering
 
-Tier-3 requires the gateway to reach Chromium over **loopback** CDP — the renderer
-rejects non-loopback CDP endpoints (TIER3-CDP-1), and the sidecar binds loopback.
-Railway services do **not** share a network namespace, so a *separate* browser
-service cannot be reached on `127.0.0.1`. Options:
+The checked Railway shape is gateway-only, so Tier-3 reports
+`render-unavailable`. Do not bundle Chromium into the gateway container or point
+the gateway at loopback: a no-sandbox browser sharing the gateway network
+namespace can impersonate the gateway after a restart.
 
-1. **Leave `allowRender` off** (default) — no browser, no Tier-3. Fine if you don't
-   need JS-rendered pages (most pages resolve at Tier-1).
-2. **Single combined image** bundling the gateway + Chromium in one container
-   (shared loopback) with `CAPTATUM_BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222`.
-   Not the default release image; build it by combining `Dockerfile` with the
-   sidecar entrypoint (`scripts/browser-sidecar.sh`).
-
-If you need Tier-3 with a separate sidecar (the `network_mode: service:gateway`
-pattern), use **EC2** (`ec2-user-data.sh`) or **Mac Mini** (`mac-mini.md`), where
-the gateway and sidecar share a network namespace.
+Tier-3 requires an orchestrator that can provide the reviewed production
+boundary: a distinct browser network namespace, CDP ingress only from the
+gateway, and a default-deny IPv4/IPv6 OUTPUT firewall installed before Chromium
+starts. The gateway accepts only the exact production Kubernetes browser service
+origin. Railway is therefore not a supported Tier-3 target for this release.

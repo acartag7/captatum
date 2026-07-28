@@ -2,6 +2,7 @@ import type { AttemptTrace, Result } from "../../domain/result.ts";
 import { classifyAccess, classifyContentType, truncatedReason } from "../../application/classify.ts";
 import { isJsonContentType } from "../../infrastructure/http/body.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
+import { canonicalMcpTitle } from "./application-agent-profile.ts";
 
 /** Max attempt lines emitted in the debug text block (MCP debug + CLI --debug). */
 const DEBUG_ATTEMPTS_CAP = 50;
@@ -16,8 +17,12 @@ function formatAttempt(a: AttemptTrace): string {
  * outputs), then the result body. Raw output is unchanged so the contract
  * fixtures (all raw) stay byte-identical.
  */
-export function resultToMcpText(result: Result, includeTextDebug = false): string {
-  const provenance = provenanceLine(result);
+export function resultToMcpText(
+  result: Result,
+  includeTextDebug = false,
+  frozenApplicationAgentProfile = false,
+): string {
+  const provenance = provenanceLine(result, frozenApplicationAgentProfile);
   if (result.output === "raw") {
     // A raw JSON body (application/json or +json) stays parseable JSON for clients that read
     // content[0].text as JSON, so omit the comment — UNLESS the body was truncated. A truncated
@@ -86,9 +91,10 @@ function isJsonBody(result: Result): boolean {
 function envelopeHeader(result: Result): string {
   const access = classifyAccess(result);
   const images = result.structured?.images ?? [];
+  const title = canonicalMcpTitle(result.title);
   const lines: Array<string | null> = [
     `contentType: ${classifyContentType(result)}`,
-    result.title ? `title: ${clip(sanitizePrintable(result.title), 140)}` : null,
+    title ? `title: ${title}` : null,
     `finalUrl: ${redactSignedQueryParams(result.finalUrl)}`,
     `access: ${access.gated ? `gated (${access.gateReason}${access.challengeProvider ? `: ${access.challengeProvider}` : ""})` : "public"}`,
     result.contentQuality ? `contentQuality: ${result.contentQuality}` : null,
@@ -98,7 +104,10 @@ function envelopeHeader(result: Result): string {
   return lines.filter((line): line is string => line !== null).join("\n");
 }
 
-function provenanceLine(result: Result): string {
+function provenanceLine(
+  result: Result,
+  frozenProfile: boolean,
+): string {
   // Surface a truncation indicator in the provenance comment — the most reliable model-visible
   // channel (present for every output mode, incl. raw where there is no envelope header). A
   // text-forward client that renders only content[0].text thus still sees that the bytes are
@@ -111,11 +120,15 @@ function provenanceLine(result: Result): string {
     ["output", result.output],
     ["status", String(result.code)],
     ["bytes", String(result.bytes)],
-    ...(truncationCode ? [["truncated", truncationCode] as [string, string]] : []),
+    ...(!frozenProfile && truncationCode
+      ? [["truncated", truncationCode] as [string, string]]
+      : []),
     // contentQuality rides the provenance comment (not just the envelope header) so a low_value
     // result returned as output:raw still signals "HTTP success ≠ usable content" to a text-forward
     // client reading only content[0].text (#159 codex). Absent for normal content.
-    ...(result.contentQuality ? [["contentQuality", result.contentQuality] as [string, string]] : []),
+    ...(!frozenProfile && result.contentQuality
+      ? [["contentQuality", result.contentQuality] as [string, string]]
+      : []),
     ["finalUrl", redactSignedQueryParams(result.finalUrl)],
     ["platform", result.platform.adapterId],
     ["jsRequired", String(result.jsRequired)],
@@ -126,14 +139,4 @@ function provenanceLine(result: Result): string {
 
 function escapeField(value: string): string {
   return JSON.stringify(value).slice(1, -1).replaceAll("--", "\\u002d\\u002d");
-}
-
-/** Strip ALL control chars (incl. CR/LF — header-line forging), bidi overrides,
- *  and zero-width chars from untrusted display fields (INJ-7). */
-function sanitizePrintable(value: string): string {
-  return value.replace(/[\x00-\x1f\x7f​-‏‪-‮]/g, "");
-}
-
-function clip(value: string, max: number): string {
-  return value.length <= max ? value : `${value.slice(0, max - 1).trimEnd()}…`;
 }

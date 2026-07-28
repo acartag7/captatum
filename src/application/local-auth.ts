@@ -18,6 +18,7 @@ const LOCAL_SUBJECT: AuthorizedSubject = Object.freeze({
   subject: "local-user",
   clientId: "local-binary",
   scopes: ["fetch:read", "fetch:transform"],
+  credentialKind: "interactive",
 });
 
 /** The `.authorize()` shape the local stdio bridge calls (structurally compatible with

@@ -9,6 +9,27 @@ Current contract version: `v0`.
 ### Breaking changes
 
 - **v0.9.0:** (1) `access.gateReason: "login"` is renamed to `"js-required"` — captatum never actually detected login walls; "login" was the catch-all for *render-needed* pages, now labeled honestly. (2) `allowRender` defaults to `true` (hosted auto-renders JS-shell pages; was `false`). A consumer keying on `gateReason === "login"` must switch to `"js-required"`.
+- **v0.20.0:** hosted DCR changes from stateless to stored. Pre-v0.20.0
+  interactive `client_id` values are deliberately invalidated and those clients
+  must register once again. Before the new server listens, a durable one-time
+  migration atomically deletes every pre-upgrade authorization code and refresh
+  family. Captatum also derives a v0.20 stored-DCR-specific consent/flow signing
+  key from the configured consent secret, so browser-held pre-upgrade consent
+  and upstream-flow tokens fail signature verification instead of minting a new
+  legacy authorization code. Every stored-DCR authorization code, refresh
+  family, and refresh-token row is additionally bound to mcp-sso's durable
+  generation `1`. A rolled-back pre-v0.20 binary omits the nullable generation
+  columns, so grants it creates are legacy `NULL` rows; after re-upgrade,
+  authorization-code consumption, refresh rotation, and prior-scope
+  accumulation reject those rows even when their `client_id` names an existing
+  stored client. Genuine generation-1 sessions survive ordinary v0.20
+  restarts. Access tokens already issued by v0.19.1 expire naturally within
+  their 600-second TTL. This is additive for a new machine client such as
+  application-agent, but it is a breaking re-registration event for existing
+  interactive clients. The v0.20.0 stored-DCR release supports one hosted
+  replica with SQLite only; a configured TiDB backend is rejected at boot until
+  the later scale release supplies an explicit SQLite-to-TiDB transfer,
+  distributed mutation serialization, and real multi-replica tests.
 
 ## Product
 
@@ -43,7 +64,7 @@ Unlike `WebFetch` (static GET + Turndown, which drops `<script>` JSON-LD/app-sta
   JSON-RPC channel. It does not serve web agents — they require the hosted HTTP
   server.
 - Auth is conditional on deployment flavor (see OAuth / Deployment): the hosted flavor requires gateway OAuth bearer tokens; a self-contained local-binary flavor runs without auth.
-- Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted boot requires explicit `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`; local defaults are loopback-only.
+- Inbound Host/Origin DNS-rebinding protection via the SDK transport (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted boot requires explicit `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, the exact reverse-proxy socket-peer allowlist `CAPTATUM_TRUSTED_PROXY_CIDRS`, and the 32-byte base64url proxy authenticator `CAPTATUM_PROXY_AUTH_SECRET`; local defaults are loopback-only.
 - **Discoverability:** the `captatum` tool `description` advertises every output mode (summary/raw/extract), provenance, `allowRender`, and `debug`, and the MCP server sends `instructions` on `initialize` (a capability guide for clients/agents). Both shapes share `createCaptatumMcpServer`, so both expose the same description + instructions. The two-shapes decision (hosted primary, local binary retained) is recorded in `docs/two-shapes.md`.
 
 ## Tool: `captatum`
@@ -500,6 +521,15 @@ Default (lean) `structuredContent`:
 ```
 
 Rules:
+- **title:** every MCP presentation channel canonicalizes the untrusted page
+  title through one Unicode-category allowlist before emission. Only letters
+  (`L`), marks (`M`), numbers (`N`), punctuation (`P`), symbols (`S`), and
+  space separators (`Zs`) survive. Controls and format characters (`Cc`/`Cf`,
+  including C1 controls, bidi isolates/overrides, and zero-width formats), line
+  and paragraph separators (`Zl`/`Zp`), surrogates, private-use, and unassigned
+  code points are removed. The result is clipped to 140 Unicode code points
+  without splitting a surrogate pair and omitted when empty. The internal
+  `Result.title` remains unchanged.
 - **errors vs warnings:** fatal ⟺ `tier === "error"`, except `schema_knob_extracted`, which is always a non-fatal warning even when a later fetch rejects. Everything else in `Result.errors` becomes a `warning` outside `tier: "error"`.
 - **status:** `fail` when `tier === "error"`, the response was 4xx/5xx (the body is an error page, not usable content), or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`. A successful candidate-MODEL fallback is a `pass` (not `partial`) — the failed-primary list rides on `transform.fallbackFrom` (debug + audit only), not a warning (#82).
 - **access.gateReason:** `captcha` when the fetched bytes are a **vendor-attributed** bot-protection challenge (a Cloudflare/Akamai/PerimeterX/DataDome/Imperva challenge-only body marker or the `cf-mitigated` header), with the vendor in `access.challengeProvider` (#41); `bot_verification` when a 429/503 response body is a **generic** browser-verification interstitial (e.g. "verifying your browser") with no attributable vendor — status-gated (429/503) + non-JSON; the phrase is scanned over the **full response body** (it can sit deep under a large `<head>` — Vercel's checkpoint buries it ~28 KB in), so the scan window is never the reason a wall is missed, `challengeProvider` absent (#151); `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `js-required` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); `http_error` when the response was 4xx/5xx (an error page — the body is still returned in `result` for the agent to read the server's message); else `none`. `captcha`/`bot_verification` take precedence over `http_error` so a 429/503 challenge wall is named as such, not as a generic error page.
@@ -536,16 +566,109 @@ vendor-attributed challenge bodies/headers, with the vendor in `access.challenge
 interstitials with no attributable vendor (#151). Both take precedence over `"http_error"`
 so a 429/503 challenge wall is named as such, not as a generic error page.
 
+### Frozen application-agent compatibility profile
+
+`application-agent` consumes a deliberately frozen subset of the v0.20.0
+single-tool wire contract. "Profile" here names the request/response contract,
+not a `CAPTATUM_CLIENT_PROFILES` runtime shaping entry. It applies when the
+authenticated caller invokes `captatum` with `output:"extract"` and
+`debug:false`; other calls retain the ordinary v0 additive-field rule. For this
+profile, additive fields, reordered text-header lines, extra
+JSON-RPC/result/content members, and new nested receipt members are breaking
+changes even while the broader contract remains v0.
+
+The request is stateless `POST /mcp` with protocol `2025-11-25`,
+`Accept: application/json, text/event-stream`, and one JSON-RPC `tools/call`.
+The tool name is `captatum`; the application-owned call fixes
+`output:"extract"`, `allowRender:true`, `debug:false`, `timeoutMs:20000`,
+`maxBytes:2097152`, `budget:4000`, its fixed prompt, and its closed job schema.
+The response `id` equals the request `id`; no SSE body or `MCP-Session-Id`
+participates in authentication.
+
+A successful result has exactly:
+
+```
+{
+  "jsonrpc": "2.0",
+  "id": <request id>,
+  "result": {
+    "content": [{ "type": "text", "text": "<frame below>" }],
+    "structuredContent": { "<receipt below>": "..." }
+  }
+}
+```
+
+`content` has exactly one text item and no extra member. Its `text` is:
+
+```
+<!-- captatum tier=<1|2|3> output=extract status=200 bytes=<n> finalUrl=<https-url> platform=<id> jsRequired=<true|false> resolvedVia=<code> -->
+
+contentType: <classified type>
+[title: <sanitized title>]
+finalUrl: <same https-url>
+access: public
+[contentQuality: <fixed code>]
+images: <count>[ (e.g. <first URL>)]
+transformModel: <model>
+
+<one JSON document>
+```
+
+The provenance keys and header lines are in exactly the shown order. Generic
+provenance additions such as `truncated` or `contentQuality` are suppressed for
+this profile; `contentQuality` belongs only in its fixed header position.
+`title` and `contentQuality` are the only conditional header lines and keep
+their shown positions. The title uses the shared Unicode-category allowlist
+above, is clipped to 140 Unicode code points, and the same canonical value is
+emitted in `structuredContent`; a title that canonicalizes to empty is omitted
+from both channels. There is one blank line after the provenance comment and
+one after the header. No extra header line is permitted. The bytes after the
+second blank line are the complete extracted JSON document.
+
+The default `structuredContent` object has exactly these required keys, in any
+JSON object order: `schemaVersion`, `ok`, `status`, `url`, `finalUrl`, `output`,
+`outputRequested`, `contentType`, `result`, `tier`, `code`, `codeText`, `bytes`,
+`resolvedVia`, `platform`, `jsRequired`, `access`, `provenance`, `warnings`,
+`images`, `errors`, and `transform`. The only permitted conditional top-level
+keys are `title`, `contentQuality`, and `egressBytes`. The nested shapes are
+closed too:
+
+- `platform` is exactly `adapterId`, `label`, `detectedFrom`;
+- public `access` is exactly `mainContentAccessible:true`, `gated:false`,
+  `gateReason:"none"`;
+- `provenance` is exactly `tier`, `resolvedVia`, `code`, `bytes`;
+- `transform` is exactly required `provider`, `model` plus optional `free`,
+  `inTokens`, `outTokens`;
+- `warnings` and `errors` are empty on accepted success.
+
+A successful extract from a page classified `contentQuality:"low_value"` still
+has `status:"pass"`: the fixed `contentQuality` field carries that page-quality
+signal, and its otherwise-duplicate `low_value_extraction` advisory is omitted
+from `warnings` for this profile. Any independent warning or transform fallback
+remains `partial` and is not an accepted application-agent success.
+
+The text frame and structured receipt MUST agree on `output`, `finalUrl`,
+`tier`, `code`, `bytes`, `resolvedVia`, `platform.adapterId`,
+`jsRequired`, `contentType`, optional title/content-quality, and transform
+model. `structuredContent.result` is the canonical lean snippet of the complete
+JSON text, so a consumer can cross-check it without treating the snippet as the
+full document.
+
 ## Ports
 
 - **`FetcherPort`** — the single hardened egress. `fetchGuarded(url, opts, postInit?) → { status, finalUrl, redirects, bodyStream, contentType, bytes } | RejectResult`. Every outbound request (Tier-1, Tier-2 adapter, every redirect hop, every Tier-3 in-browser request) routes through it. The optional `postInit: { method: "POST"; body: Uint8Array; requestContentType?: string }` (#111) carries a first-party POST body on the INITIAL request only — `fetchWithRedirects` reverts to GET + no body on any 3xx (incl. 307/308, a deliberate deviation from RFC 7231) so the body can never reach a redirect target host.
 - **`PlatformAdapter`** — `{ id, detect(ctx): DetectResult | null, resolve(input, fetcher): Promise<ResolveResult> }`. Registered in `src/application/adapters.ts`. Optional general-purpose extension point: adding a platform = one folder under `src/infrastructure/<platform>/` + one registry line + one fixture. Not part of the public contract.
 - **`StorePort`** — OAuth state only: auth-code records and refresh-token records
-  (hashed), plus `close()`. Owned by the **mcp-sso** library (`mcp-sso/store/sqlite`
-  + `mcp-sso/store/mysql`); captatum builds the store in its composition root
-  (`src/server.ts`) and hands it to the mcp-sso `Bridge`. The hosted flavor uses the
-  `node:sqlite` impl (a single file — the DEFAULT) or, when `TIDB_HOST` is set, the
-  `mysql2` impl. The local stdio bridge has no OAuth and opens no store.
+  (hashed), plus `close()`. Owned by the **mcp-sso** library
+  (`mcp-sso/store/sqlite`); captatum builds it in the composition root and hands
+  it to the mcp-sso `Bridge`.
+- **`ClientStore`** — stored DCR + machine-client registrations: `save(client)` /
+  `find(clientId)`, plus the mcp-sso atomic machine-mutation contract used by the
+  operator CLI. Captatum supplies the SQLite adapter and gives the same instance
+  to stored DCR, `client_credentials`, and the operator CLI. Machine provision,
+  rotation, and disable use insert/CAS mutations that commit the client row and
+  required durable audit row in one transaction. The local stdio bridge opens
+  neither store.
 - **`ModelRouterPort`** — `pick(task, inputTokens, options?): { provider, model?, free?, reason? }` + `feedback({ model, outcome })` driving sticky per-model health (a model demotes one rank only on SUSTAINED hard failure — ≥3 of the last 5 attempts; transient empties and soft/garbage output don't demote). `options.localOnly` is used for sensitive-content signals so hosted providers are bypassed. Implemented by `src/infrastructure/llm/model-router.ts`.
 
 ## Tiers
@@ -582,7 +705,7 @@ so a 429/503 challenge wall is named as such, not as a generic error page.
   rendered `page.content()` is reused by the Tier-1 extractor and provenance
   records tier 3 plus browser control actions (`service-workers-disabled`,
   `request-blocked`, `resource-aborted`, `websocket-closed`,
-  `download-blocked`). The browser runs with an empty environment. **Two acquisition modes** (factory `createRenderer()`, config-driven): (a) **CDP sidecar** — connect to a long-lived Chromium in its OWN container via `CAPTATUM_BROWSER_CDP_ENDPOINT` (the hosted path; connection cached + reused, never closed per-render; `--no-sandbox` is acceptable there because the container is the isolation boundary); (b) **in-process launch** — `chromiumSandbox` defaults **true** (the local-binary path; `--no-sandbox` in-process is only a transitional opt-in via `CAPTATUM_BROWSER_INPROCESS_SANDBOX=false`). Either way the browser never runs in-process with `--no-sandbox` against the gateway's blast radius. The `page.route` SSRF guard applies identically in both modes. If Playwright is
+  `download-blocked`). The browser receives no gateway secret in its environment. **Two acquisition modes** (factory `createRenderer()`, config-driven): (a) **CDP browser workload** — connect to long-lived Chromium via `CAPTATUM_BROWSER_CDP_ENDPOINT` (the hosted path; connection cached + reused, never closed per-render; `--no-sandbox` is acceptable there because the container is the isolation boundary); (b) **in-process launch** — `chromiumSandbox` defaults **true** (the local-binary path; `--no-sandbox` in-process is only a transitional opt-in via `CAPTATUM_BROWSER_INPROCESS_SANDBOX=false`). The endpoint is parsed before any hosted state-directory or database side effect. Its positive allowlist shape is exactly `http://<service>.<namespace>.svc.cluster.local:9222`, where service and namespace are DNS-1123 labels; credentials, query, fragment, non-root path, loopback, IP literals, arbitrary external hosts, HTTPS, and other ports fail boot. This keeps the deployment-owned service name out of Captatum while preventing a loopback endpoint from placing the no-sandbox browser back in the gateway network namespace. Chromium itself remains loopback-only on TCP/9222 inside its separate Pod. The production browser image also ships a fixed TCP relay entrypoint: it listens on `0.0.0.0:9223`, forwards only to `127.0.0.1:9222`, caps simultaneous connections at 32, and accepts no configurable target. The browser Service maps TCP/9222 to that relay inside the isolated browser Pod. The browser launcher accepts only loopback bind address `127.0.0.1` and a decimal port in `1..65535`. Either way the browser never runs in-process with `--no-sandbox` against the gateway's blast radius. The `page.route` SSRF guard applies identically in both modes. If Playwright is
   absent → `render-unavailable`. **When it applies:** Tier-3 fires when Tier-1
   finds an empty SPA shell or no usable structured data — e.g. client-rendered
   React/Vue/Svelte apps whose HTML is a `<div id="root">` stub; pages that load
@@ -612,7 +735,7 @@ Auth is **conditional on deployment flavor** (see Deployment). Two flavors:
 - **Hosted remote server** (primary) — requires the gateway-owned OAuth below, so it can serve web agents (claude.ai, chatgpt.com) and shared users.
 - **Self-contained local binary** — runs without auth for a single agent/user on one machine.
 
-The OAuth contract below applies only to the hosted flavor. captatum's hosted OAuth is powered by the **mcp-sso** library (`mcp-sso@0.2.0`, acartag7/mcp-sso) — captatum's own OAuth 2.1 / DCR / PKCE / Cloudflare-Access stack, extracted + hardened into the owner's OSS library; captatum dogfoods it as its reference production consumer. The mechanics (DCR/PKCE/consent, token sign+verify, JWKS, AS/PRM metadata, the OAuth-state store + replay/rotation) live in the library; captatum owns only its scope policy (`fetch:read`/`fetch:transform`) and the hosted-vs-local flavor boundary. The client-facing endpoints + flow are unchanged from the prior in-house stack (mcp-sso was extracted from it), so existing clients re-auth once (the store schema is the library's) and continue:
+The OAuth contract below applies only to the hosted flavor. captatum's hosted OAuth is powered by the **mcp-sso** library (`mcp-sso@0.3.2`, acartag7/mcp-sso) — captatum's own OAuth 2.1 / DCR / PKCE / Cloudflare-Access stack, extracted + hardened into the owner's OSS library; captatum dogfoods it as its reference production consumer. The mechanics (DCR/PKCE/consent, token sign+verify, JWKS, AS/PRM metadata, the OAuth-state store + replay/rotation) live in the library; captatum owns its scope policy (`fetch:read`/`fetch:transform`), bounded SQLite deployment adapter, and the hosted-vs-local flavor boundary.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -622,10 +745,114 @@ The OAuth contract below applies only to the hosted flavor. captatum's hosted OA
 | POST | `/oauth/register` | Dynamic Client Registration |
 | GET | `/oauth/authorize` | Prepare consent; set signed consent cookie |
 | POST | `/oauth/authorize/approve` | Verify consent token; issue single-use auth code; 302 `?code=&iss=&state=` |
-| POST | `/oauth/token` | `authorization_code` / `refresh_token` grant (`cache-control: no-store`) |
+| POST | `/oauth/token` | `authorization_code` / `refresh_token` / `client_credentials` grant (`cache-control: no-store`) |
 | POST | `/oauth/revoke` | Revoke refresh-token family; always 200 |
 
-Flow: authorize (PKCE S256, request-bound signed consent token) → approve (single-use code, stored as `sha256(code)`) → token (verify PKCE, issue **ES256 JWT** access token signed by `OAUTH_SIGNING_PRIVATE_JWK`, aud=resource; rotating refresh tokens stored as `sha256(raw)`, grouped by family; replay revokes the family). Auth-code TTL is 300 s, access TTL 600 s, and refresh TTL 30 days. The mcp-sso `Bridge` + Fastify adapter serve this flow end-to-end (`registerOAuthRoutes`). Hosted production boot is fail-closed: `OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` + `OAUTH_ISSUER` (absolute `https`) + `OAUTH_RESOURCE` (absolute URL) are validated by mcp-sso's `createBridgeConfig` (EC P-256 key shape, ≥32-char consent secret, https origins, valid TTLs, scope subset), and captatum adds its AUTH-1 gate that the hosted flavor MUST sit behind Cloudflare Access (`CF_ACCESS_ENABLED=true` + `CF_ACCESS_AUDIENCE/CERTS_URL/ISSUER`, the JWKS URL https) — so the OAuth subject is always a real verified identity, never a placeholder. mcp-sso's Cloudflare-Access identity port verifies the `Cf-Access-Jwt-Assertion` (RS256 against CF's public JWKS, aud/iss/exp + email presence); the email allowlist (which emails may mint a token) is enforced by the CF Zero Trust Access app policy — the single source of truth — with an optional `CF_ACCESS_EMAIL_ALLOWLIST` env as a defense-in-depth second gate.
+Flow: authorize (PKCE S256, request-bound signed consent token) → approve (single-use code, stored as `sha256(code)`) → token (verify PKCE, issue **ES256 JWT** access token signed by `OAUTH_SIGNING_PRIVATE_JWK`, aud=resource; rotating refresh tokens stored as `sha256(raw)`, grouped by family; replay revokes the family). Auth-code TTL is 300 s, access TTL 600 s, and refresh TTL 30 days. Hosted DCR is stored, not stateless: interactive registrations and out-of-band machine clients use the persistent SQLite `ClientStore`. Before the first v0.20.0 listener opens, the auth database transactionally records the `stored-dcr-v1` migration marker and, in the same transaction, deletes all legacy authorization codes, refresh tokens, and refresh families. A recorded marker makes later restarts a no-op. mcp-sso generation `1` distinguishes grants created by the current stored-DCR runtime from `NULL` legacy grants created before cutover or by a rolled-back binary; generation is checked atomically when a code is consumed or a refresh token rotates, and both the family and token generation must match. Existing interactive clients register once again, then genuine current-generation sessions survive restarts.
+
+Headless callers use mcp-sso's `client_credentials` extension. Machine clients
+are managed only by the operator CLI inside the gateway image:
+
+- `provision <name> <scope...>` creates a machine client;
+- `rotate <client-id> [grace-seconds]` replaces its live secret;
+- `disable <client-id>` leaves an auditable disabled tombstone and removes all
+  accepted secret hashes;
+- `list` emits only safe identifiers, names, scopes, versions, and status so an
+  operator can recover after an output-channel failure.
+
+There is no HTTP provisioning endpoint and open DCR cannot create a machine
+record. Provision validates a non-empty scope ceiling against Captatum's live
+catalog. A machine record is versioned; provision is an insert, while rotate and
+disable are compare-and-swap updates. The client mutation and its required
+metadata-only durable audit row commit in the same SQLite transaction or neither
+does. Concurrent rotations therefore have at most one successful CAS; a losing
+rotation fails before its newly generated secret can reach stdout. Rotation
+keeps at most two active hashes, defaults to 300 seconds of overlap, and rejects
+any grace above the hard 600-second maximum.
+
+The raw credential appears once on stdout only. Required durable audit rows and
+best-effort stderr diagnostics never contain the secret or its hash. stdout and
+stderr write, synchronous rejection, EPIPE, callback, backpressure,
+flush, and terminal-close paths are handled without uncaught exceptions or
+hangs. A non-evented injected writer must declare either synchronous completion
+or callback completion explicitly; function arity is never treated as a
+capability signal. For callback completion, the callback is authoritative and a
+`false` return is backpressure, not failed delivery. A stderr failure does not reverse
+an atomically committed mutation and does not turn a successfully delivered
+stdout credential into an ambiguous failed command; the durable SQLite audit is
+authoritative. Because a stdout failure can occur after a transaction commits,
+a credential-output failure triggers a compensating CAS disable bound to the
+exact mutation version whose secret was being emitted. It can never re-read and
+disable a newer concurrent rotation. When compensation succeeds, `list` shows
+the tombstone and `provision` creates the replacement. If the version conflicts
+or the disable fails, the command returns a distinct failure and instructs the
+operator to use `list` then `disable`; no raw database surgery is needed.
+Database-close failure is likewise non-throwing with respect to already emitted
+bytes but produces a non-zero command result.
+
+Captatum enables `clientCredentials` only with stored DCR and advertises
+`client_credentials`, `client_secret_basic`, and `client_secret_post` through
+RFC 8414 metadata. Machine grants mint no refresh token: a caller caches the
+600-second access token, renews with its durable client credential before
+expiry, requests only its provisioned scope ceiling, and treats token/auth
+failure as closed. Disable rejects all later token exchanges immediately.
+Already-issued stateless bearer JWTs are not recalled and remain usable only
+until their original expiry, at most 600 seconds after issuance.
+
+The open DCR route uses a fail-closed per-source fixed-window limiter: at most
+10 registration attempts per 10 minutes, with a bounded 4096-key in-memory map;
+an unavailable or malformed key is rejected. Hosted boot requires a non-empty
+`CAPTATUM_TRUSTED_PROXY_CIDRS` IP/CIDR allowlist and a 43-character base64url
+`CAPTATUM_PROXY_AUTH_SECRET` generated from 32 random bytes. Fastify accepts a
+forwarded client address only when both the socket peer is allowlisted and the
+request carries a timing-safe-valid `X-Captatum-Proxy-Auth` value. The gateway
+removes that internal header from both parsed and raw/distinct Node header views
+before route dispatch. The authenticated forwarding envelope is the closed set
+`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
+`X-Forwarded-Port`, `X-Real-IP`, and `CF-Connecting-IP`. Missing, duplicate, or
+incorrect authenticators on a request carrying any member are rejected before
+OAuth/MCP dispatch with HTTP 400 `{error:"invalid_proxy_auth"}`; every member is
+also removed from parsed and raw/distinct views on rejection. This holds even
+when an untrusted co-tenant shares the proxy's socket address; it does not make
+sharing the gateway network namespace with a browser safe. A direct request
+with no forwarding envelope stays in its socket peer's single bucket. The
+Cloudflare edge must overwrite the authenticator with a static secret on the
+Captatum hostname; a caller-supplied value is never preserved. Docker Compose
+pins the host bridge peer used by its published loopback port instead of
+assuming that the container sees host loopback. CIDRs are bounded to IPv4
+`/24`-`/32` and IPv6 `/64`-`/128`;
+universal and broad private-network ranges are boot rejections. This keeps
+Internet callers in independent registration/token buckets without letting a
+client-controlled header or an untrusted co-tenant select a bucket. The SQLite adapter independently
+enforces hard transactional storage caps of 1024 total clients, at most 1008
+interactive clients and at most 16 **active** machine clients. Disabled machine
+tombstones still count toward the total cap. New rows beyond a cap are rejected
+deterministically while updates and lookups for existing clients keep working.
+A successful validated lookup refreshes an interactive client's last-used
+timestamp. Boot and the five-minute maintenance loop delete only interactive
+registrations unused for 30 days; machine records and their disabled tombstones
+are never removed by this sweep. The backend cap, not the rate limiter, is the
+final storage bound.
+
+The mcp-sso `Bridge` + Fastify adapter serve this flow end-to-end
+(`registerOAuthRoutes`). Hosted production boot is fail-closed:
+`OAUTH_CONSENT_SIGNING_SECRET` + `OAUTH_SIGNING_PRIVATE_JWK` +
+`OAUTH_SIGNING_KEY_ID` + a non-empty `OAUTH_REDIRECT_ALLOWLIST` +
+non-empty `MCP_ALLOWED_ORIGINS` +
+non-empty, valid `CAPTATUM_TRUSTED_PROXY_CIDRS` +
+valid `CAPTATUM_PROXY_AUTH_SECRET` +
+`OAUTH_ISSUER` (absolute `https`) + `OAUTH_RESOURCE` (absolute URL) are
+validated by mcp-sso's `createBridgeConfig` (EC P-256 key shape, ≥32-char
+consent secret, https origins, valid TTLs, scope subset). Missing, empty, or
+whitespace-only values are rejected; no security selector is converted to an
+optional value. Captatum adds its
+AUTH-1 gate that the hosted flavor MUST sit behind Cloudflare Access
+(`CF_ACCESS_ENABLED=true` + `CF_ACCESS_AUDIENCE/CERTS_URL/ISSUER`, the JWKS
+URL https) — so the OAuth subject is always a real verified identity, never a
+placeholder. mcp-sso's Cloudflare-Access identity port verifies the
+`Cf-Access-Jwt-Assertion` (RS256 against CF's public JWKS, aud/iss/exp + email
+presence); the email allowlist is enforced by the CF Zero Trust Access app
+policy, with optional `CF_ACCESS_EMAIL_ALLOWLIST` as defense in depth.
 
 Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). Tool handlers enforce required scope per request using the **resolved** output (with the provider-conditional default applied): an effective `raw` call requires `fetch:read` even if it carries an unused `transform` override; an effective `summary`/`extract` call requires `fetch:transform`. So a zero-config call with no provider (resolves to `raw`) needs only `fetch:read`.
 
@@ -633,29 +860,68 @@ Scopes: `fetch:read` (default), `fetch:transform` (to use the Transform stage). 
 
 - OUTBOUND rebinding-proof `guardedFetch`: scheme `http|https` only; reject raw CRLF; reject userinfo-bearing URLs and strip credentials from all sanitized URL values; resolve → `isPrivate` CIDR (v4 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16 incl. metadata, 0.0.0.0/8, 100.64/10, 224/4; v6 ::1, fe80/10, fc00/7, ff00/8, `::ffff:0:0/96`, NAT64 `64:ff9b::`, IPv4-compatible) → connect to the resolved IP (`node:https` with `servername`/`Host` = original host); manual redirects re-validated each hop (`maxHops=5`); decompressed-byte cap; `AbortController` timeout.
 - INBOUND: SDK transport Host/Origin DNS-rebinding protection.
-- TIER-3 in-browser SSRF: `page.route` intercepts every browser request; **every non-aborted GET — and a first-party POST (same registrable domain, fetch/XHR only — #111) — is fulfilled through `FetcherPort`** (`route.fulfill`, never `route.continue`) so the browser makes no direct egress — connections are IP-pinned and every redirect hop is re-validated (`maxHops`, and a POST's method/body apply to the initial hop only); image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate process/container with no env — in-process launch keeps the OS sandbox ON (`chromiumSandbox` default true), and the hosted path uses a CDP sidecar container (`CAPTATUM_BROWSER_CDP_ENDPOINT`) where `--no-sandbox` is acceptable (container-isolated). The browser never runs in-process with `--no-sandbox` against the gateway. The first-party POST gate is PSL-aware (`isSameRegistrableDomain` via `psl`), POST-only, header-allowlisted (Content-Type only — never Cookie/Auth/Origin/Referer/Content-Length), body-capped (`CAPTATUM_RENDER_POST_MAX_BYTES`, never truncated) + concurrency-capped (`CAPTATUM_RENDER_POST_CONCURRENCY`), and the body is counted against the essential render-byte pool at dispatch and released on reject so N rejected POSTs cannot blow the pool. A same-registrable cross-origin POST (e.g. a page on developer.atlassian.com POSTing to api.atlassian.com) triggers a Chromium CORS preflight (`OPTIONS`) + a CORS check on the response; captatum synthesizes a permissive first-party preflight response (204 + `Access-Control-Allow-Origin: *` + allow-methods/headers) and adds `Access-Control-Allow-Origin: *` to the forwarded POST response, so the in-render browser admits the cross-origin exchange (captatum is its own controlled fetcher, not a real cross-origin client the upstream must authorize; the POST is already first-party-gated and carries no credentials).
+- TIER-3 in-browser SSRF: `page.route` intercepts every browser request; **every non-aborted GET — and a first-party POST (same registrable domain, fetch/XHR only — #111) — is fulfilled through `FetcherPort`** (`route.fulfill`, never `route.continue`) so the browser makes no direct egress — connections are IP-pinned and every redirect hop is re-validated (`maxHops`, and a POST's method/body apply to the initial hop only); image/font/media/analytics URLs are P1 URL/DNS private-IP checked and aborted; websocket-close; SW off; downloads blocked; render-byte cap (advisory truncation); browser in a separate process/container with no secret-bearing env — in-process launch keeps the OS sandbox ON (`chromiumSandbox` default true), and the hosted path uses a distinct browser workload and network namespace over CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`) where `--no-sandbox` is acceptable (container-isolated). The production browser Pod has no secrets or Linux capabilities and accepts CDP only from the gateway Pod. Before browser startup, a trusted init container replaces the Pod network namespace's IPv4 and IPv6 OUTPUT chains with default-drop rules that allow only loopback and established replies; Kubernetes NetworkPolicy is ingress-only because the production kube-router does not enforce external egress denial. The browser cannot share the gateway/cloudflared network namespace: otherwise a compromised browser could bind a temporarily free gateway port and receive the edge authenticator. The browser never runs in-process with `--no-sandbox` against the gateway. The first-party POST gate is PSL-aware (`isSameRegistrableDomain` via `psl`), POST-only, header-allowlisted (Content-Type only — never Cookie/Auth/Origin/Referer/Content-Length), body-capped (`CAPTATUM_RENDER_POST_MAX_BYTES`, never truncated) + concurrency-capped (`CAPTATUM_RENDER_POST_CONCURRENCY`), and the body is counted against the essential render-byte pool at dispatch and released on reject so N rejected POSTs cannot blow the pool. A same-registrable cross-origin POST (e.g. a page on developer.atlassian.com POSTing to api.atlassian.com) triggers a Chromium CORS preflight (`OPTIONS`) + a CORS check on the response; captatum synthesizes a permissive first-party preflight response (204 + `Access-Control-Allow-Origin: *` + allow-methods/headers) and adds `Access-Control-Allow-Origin: *` to the forwarded POST response, so the in-render browser admits the cross-origin exchange (captatum is its own controlled fetcher, not a real cross-origin client the upstream must authorize; the POST is already first-party-gated and carries no credentials).
 - Response guards: stream through a counting reader that **truncates** at `maxBytes` (advisory `truncated` flag, not a hard reject) — Content-Length is attacker-controlled so a pre-check would only stop honest oversized servers; the streamed cap is the real backstop.
 - Logging: allow-list only (tier, finalUrl, platform, status, bytes, timing, blockReason); never body, never `Set-Cookie`/`Authorization`; canonicalize logged URLs to scheme+host when host is private. Per-call audit event.
 - Concurrency: a process-wide `AdmissionLimiter` (`MAX_CONCURRENT_MCP=8`) bounds concurrent tool **executions** on hosted (one slot per single-fetch call, one slot per whole `captatum_bulk` call). The single-URL `guardedFetch` is otherwise stateless (no per-host throttle, no in-flight dedupe at the fetcher). `captatum_bulk` adds its own in-orchestrator bounds — `maxConcurrency` (global fetch pool within a call) + a union-keyed per-host token-bucket gate (`maxPerHostInflight` + `crawlDelayMs`) + the BulkGuard caps; a process-wide **global** fetch-concurrency cap across all callers (`LimitingFetcher`, PR 3) wraps the hosted `FetcherPort`, and a per-tenant `BulkQuotaPort` bounds cross-call amplification (see "Tool: captatum_bulk" / "Hosted amplification controls").
 
 ## Storage
 
-OAuth state only (auth codes + refresh tokens, hashed), behind mcp-sso's
-`StorePort` (the library owns the schema + the SQL migrations):
-- **Hosted flavor → SQLite (DEFAULT)** via `node:sqlite` (`mcp-sso/store/sqlite`,
-  `openSqliteStore`) — a single file on disk, no server. Configured with
-  `CAPTATUM_SQLITE_PATH` (default `./data/captatum.sqlite`; the parent dir is
-  created at boot). The hosted flavor boots with SQLite when no `TIDB_HOST` is set,
-  so one-click deploys (Railway / EC2 / Mac Mini) need no external database.
-- **Hosted flavor → TiDB (optional scale path)** via `mysql2`
-  (`mcp-sso/store/mysql`, `createMysqlStore`), opted into by setting
-  `TIDB_HOST/PORT/DATABASE/USER/PASSWORD` (+ `TIDB_SSL_CA`; TLS required
-  regardless of `NODE_ENV`, SQLSTORE-1). Provisioning the `captatum`
-  database/user/security-group rule is deployment work outside this repo slice.
+OAuth state only (auth codes + refresh tokens, hashed) plus stored DCR/machine-client
+records and metadata-only client-lifecycle audits, behind mcp-sso's `StorePort`
+and Captatum's deployment `ClientStore` adapter:
+- **Hosted flavor → SQLite (DEFAULT)** via two independently owned `node:sqlite`
+  files in one private Captatum state directory. Existing deployments remain
+  compatible: `CAPTATUM_SQLITE_PATH` still names mcp-sso's OAuth file (default
+  `./data/captatum.sqlite`), its parent becomes the state directory, and Captatum's
+  `ClientStore` uses the derived sibling `<path>.clients`. Before mkdir/open, every
+  existing state-path component must be a real directory (no symlink or non-directory
+  component); an existing state directory must already be mode `0700` and owned
+  by the running effective UID/GID. Missing components are created explicitly as
+  `0700`. Both opened database files must be regular non-symlink files at `0600`,
+  owned by that same UID/GID; equal/hard-linked inode aliases are rejected again
+  after open as defense-in-depth. Separate files prevent cross-store writer lock
+  contention. `:memory:` is paired test mode only. `node:sqlite` exposes no
+  atomic no-follow open, so these checks do not claim absolute TOCTOU prevention:
+  a same-UID process able to mutate the private directory is already inside the
+  OAuth-key trust boundary. No external database server is needed.
+- **TiDB/multi-replica is deferred for the v0.20.0 auth transition.**
+  `TIDB_HOST` remains the sole backend selector; any non-empty value is a
+  pre-side-effect boot rejection. With no host, the historical inert template
+  defaults `TIDB_PORT=4000`, `TIDB_DATABASE=captatum`, and
+  `TIDB_USER=captatum_rw` are accepted and ignored so existing SQLite
+  deployments upgrade without editing old environment files. Any other
+  non-empty TiDB value, including credentials or CA material without a host,
+  is rejected as a partial configuration. Reintroduction requires an explicit
+  SQLite-to-TiDB transfer, a distributed CAS/serialization implementation for
+  every client mutation, the same bounded-retention semantics, and real
+  multi-replica restart/rotation tests.
 - No fetched content/body/cache rows are stored; the service is stateless
   otherwise.
 
-Tables (owned by mcp-sso; identical to the prior in-house schema — mcp-sso was extracted from captatum): `oauth_auth_codes` (code hash, client id, subject, redirect URI, resource, scopes JSON, PKCE challenge, expiry), `oauth_refresh_tokens` (token hash, family id, previous token hash, client id, subject, scopes JSON, expiry, consumed timestamp), and `oauth_refresh_token_families` (family id, revoked timestamp). Auth codes are deleted on first consume whether valid or expired. Refresh rotation atomically marks the old token consumed and inserts the next hashed token; replay of a consumed token revokes the whole family. Consumed refresh tokens are retained until their whole FAMILY is past validity (each rotation issues a fresh TTL, so a successor outlives its consumed predecessor — the consumed row is kept as long as any family member is still valid, so a stolen-token replay can still revoke the family) and then swept; orphaned token families — not only revoked ones — are cleaned once they have no remaining tokens (bounded storage growth, no unbounded accumulator). captatum keeps a periodic `sweepExpired` loop (5 min) over the mcp-sso store. No raw codes/tokens and no fetched content/body/cache rows are stored — the service is stateless otherwise. Schema via the library's SQL migrations.
+Tables owned by mcp-sso: `oauth_auth_codes` (code hash, client id, subject, redirect URI, resource, scopes JSON, PKCE challenge, expiry, nullable grant generation), `oauth_refresh_tokens` (token hash, family id, previous token hash, client id, subject, scopes JSON, expiry, consumed timestamp, nullable grant generation), and `oauth_refresh_token_families` (family id, revoked timestamp, nullable grant generation). Captatum adds `captatum_schema_migrations` to the auth file and, in the client file, `oauth_clients` plus append-only `oauth_machine_client_audit`. `oauth_clients` contains primary-key client id, application type, redirect URI JSON, issued and last-used epochs, optional name, allowed-scope JSON, secret-record JSON, lifecycle status, mutation version, and updated epoch. Every row is parsed into the full closed client domain before return: client-id namespace, application type, redirect policy, arrays, epochs, lifecycle state, versions, and hashes are all checked. A policy-invalid or corrupt row maps to `null`, so authorization/token handling returns `invalid_client` rather than 500. DCR save is insert-only for a new id and permits only an identical existing registration; machine mutations are versioned insert/CAS operations. No path stores a raw secret.
+
+The `stored-dcr-v1` migration transaction creates its marker table if needed,
+deletes legacy auth codes/tokens/families, then inserts the marker. A failure
+rolls the whole transaction back and aborts boot. The final stored-DCR
+`BridgeConfig` HMAC-derives a versioned consent/flow secret from the validated
+operator secret, invalidating browser-held pre-upgrade consent and upstream-flow
+JWTs without changing the ES256 access-token signing key. The mcp-sso SQLite
+migration adds nullable `grant_generation` columns with no SQL default. Current
+stored-DCR writes explicitly stamp generation `1`; an old binary's fixed-column
+inserts therefore remain `NULL`. Code consumption burns a legacy/non-current
+code while returning `invalid_grant`. Refresh rotation checks the family and
+token generations inside the same transaction before consuming the
+predecessor or inserting a successor; a legacy successor inserted into an
+otherwise-current family is also rejected. Prior-scope accumulation filters
+both generations. Auth codes are otherwise deleted on first consume whether
+valid or expired. Refresh rotation atomically marks the old token consumed and
+inserts the next hashed token; replay of a consumed token revokes the whole
+family. Consumed refresh tokens are retained until their whole family is past
+validity and then swept; orphaned families are cleaned once no token remains.
+Captatum keeps a five-minute loop over OAuth expiry plus stale
+interactive-client retention. No raw codes/tokens and no fetched
+content/body/cache rows are stored.
 
 ## Contract fixtures
 
@@ -706,21 +972,24 @@ All HTTP/JSON-RPC errors:
 { "jsonrpc":"2.0", "error": { "code": -32003, "message": "..." }, "id": null }  // auth-failed JSON-RPC (-32003; was -32001, which collides with the MCP SDK's RequestTimeout — see #100)
 ```
 
-Admission overload is a distinct, **retryable** JSON-RPC error, separate from `InternalError`. When the hosted server is at concurrent-execution capacity (DOS-2 admission cap) it emits `{ "jsonrpc":"2.0", "id":<id>, "error":{ "code": -32050, "message":"captatum: server overloaded — retry later", "data":{ "retryable": true } } }`. `-32050` is a server-error-range value, reserved and distinct from the auth-failed `-32003`. `data.retryable: true` is the stable contract field. Clients SHOULD treat this as an expected transient condition — back off and retry the same call (ideally with jitter) — NOT as an `InternalError`/bug. The local stdio bridge (single-user, no admission cap) never emits it. There is no `Retry-After` header (Streamable HTTP carries errors inside the JSON-RPC body, not as HTTP 4xx/5xx). (#84)
+Admission overload is a distinct, **retryable** JSON-RPC error, separate from `InternalError`. For the single `captatum` tool admission path, concurrent-execution capacity (DOS-2) emits exactly `{ "jsonrpc":"2.0", "id":<id>, "error":{ "code": -32050, "message":"captatum: server overloaded — retry later", "data":{ "retryable": true } } }`. The frozen application-agent profile permits no additional `data` member on this path. `captatum_bulk` quota exhaustion also uses `-32050` but is a separate contract variant whose `data` may be `{ "retryable":true, "retryAfterMs":<positive integer> }`. `-32050` is distinct from auth-failed `-32003`. Clients SHOULD back off and retry; the local stdio bridge never emits admission overload. There is no `Retry-After` HTTP header. (#84)
 
 Stable `code` values; `message` may change. Auth failure sets `WWW-Authenticate` to an RFC 9728 `Bearer` challenge built by mcp-sso (`buildUnauthorizedChallenge`) — `Bearer resource_metadata="<PRM URL>", scope="fetch:read fetch:transform"[, error="<invalid_token|insufficient_scope>", error_description="<text>"]` — where `resource_metadata` is the resource origin's `/.well-known/oauth-protected-resource` URL (lets a client fetch the PRM doc and discover the authorization server per RFC 9728), and `scope` advertises the catalog. The `error`/`error_description` attributes are present whenever the `/mcp` request is rejected (a missing **or** invalid Bearer token → `invalid_token`; a verified token that failed a scope check → `insufficient_scope`); the human remedy also rides on the JSON-RPC `message`. (mcp-sso emits the RFC 9728 `resource_metadata` form; the prior captatum-specific `realm="captatum"` form — incl. its realm-only-on-no-credentials distinction — was retired with the in-house OAuth stack. RFC 9728 `resource_metadata` is the more standards-compliant + self-discovering form, and is mcp-sso's canonical behavior.) (#104 evolved)
 Tool input validation failures use the same HTTP error wrapper and include
 `invalid_input` for malformed tool payloads before any outbound work begins.
-Guarded fetch reject codes include `unsupported_scheme`, `invalid_url`,
-`crlf_url`, `userinfo_url`, `private_address`, `dns_error`, `dns_empty`,
-`redirect_limit`, `max_bytes`, `timeout`, `unsupported_encoding`,
-`body_read_error`, `network_error`, and `invalid_options`. Note `body_read_error`
+Guarded fetch policy reject codes include `unsupported_scheme`, `invalid_url`,
+`crlf_url`, `userinfo_url`, `private_address`, `blocked_port`,
+`scheme_downgrade`, `redirect_limit`, and `invalid_options`. Transient
+guarded-fetch reject codes are `dns_error`, `dns_empty`, `timeout`,
+`network_error`, `body_read_error`, and `unsupported_encoding`.
+`max_bytes` is advisory rather than a guarded-fetch rejection. Note `body_read_error`
 has two roles (#149): a **hard** guarded-fetch reject (a **zero-bytes** total
 transport failure — the stream broke before any content arrived) AND a **non-fatal
 advisory** entry inside a *successful* `Result.errors` (a mid-read truncation with
 partial bytes). (`max_bytes` — Tier-1/Tier-3 cap — and `extract_schema_invalid` —
 transform/extract — are non-fatal advisories only; they never hard-reject a fetch.) Input
-validation also hard-rejects, before any egress: `extract_schema_unsupported_keyword` for an
+validation also hard-rejects, before any egress, as JSON-RPC `InvalidParams`
+rather than a guarded-fetch receipt: `extract_schema_unsupported_keyword` for an
 `output:"extract"` schema using a keyword the validator cannot verify after the six recoverable
 root-level Captatum knobs are extracted and warned (`schema_knob_extracted`; allowlist fail-closed;
 distinct from the advisory `extract_schema_invalid`; applies to `captatum_bulk`'s uniform
@@ -768,12 +1037,17 @@ The repo ships two deployment-flavor runtimes off one core engine:
 - **Hosted remote server runtime**: Streamable HTTP `/mcp` + gateway OAuth,
   implemented by `src/server.ts` / `src/interfaces/http/*` and exercised locally
   by tests and `pnpm run smoke:hosted`. The `.github/workflows/release.yml`
-  workflow builds and publishes the gateway and browser-sidecar images to GHCR on
+  workflow builds and publishes the gateway and browser images to GHCR on
   a `v*` tag (`ghcr.io/acartag7/captatum`, `ghcr.io/acartag7/captatum-browser`).
-  The **gateway image ships no browser binary** — Tier-3 connects to the sidecar
-  over CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`), keeping Chromium out of the gateway's
-  blast radius; without a sidecar, Tier-3 is `render-unavailable`. The default
-  OAuth-state store is a local SQLite file (no database); self-host templates
+  The **gateway image ships no browser binary** — Tier-3 connects to the browser
+  workload over CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`), keeping Chromium out of
+  the gateway's blast radius; without it, Tier-3 is `render-unavailable`. In the
+  production Kubernetes topology Chromium and its fixed loopback-to-Pod CDP
+  relay share a dedicated Pod/network namespace behind a ClusterIP Service and
+  an ingress-only NetworkPolicy. A trusted init container installs IPv4 and
+  IPv6 default-drop OUTPUT rules before browser startup; neither shares the
+  gateway/cloudflared Pod. Default state is
+  the local SQLite file pair above (no database server); self-host templates
   (Railway / EC2 / Mac Mini) live in `deploy/`.
 - **Self-contained local binary runtime**: the same engine can be compiled (Bun
   `--compile`) into one executable an agent runs locally — no deployment, no

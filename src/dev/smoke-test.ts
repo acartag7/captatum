@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import type { JWK } from "jose";
@@ -8,6 +8,7 @@ import {
   signAccessToken,
   createBridgeConfig,
   type BridgeConfig,
+  type ClientStore,
   type IdentityPort,
 } from "mcp-sso";
 import { createMemoryStore } from "mcp-sso/store/memory";
@@ -27,6 +28,10 @@ const BLOCKED_URL = "http://169.254.169.254/latest/meta-data";
 const SPA_URL = "https://smoke.test/spa";
 const FIXTURE_TEXT = "captatum shared smoke fixture content.";
 const clock: ClockPort = { nowMs: () => Date.parse("2026-06-16T12:00:00.000Z") };
+const smokeClientStore: ClientStore = {
+  async save(): Promise<void> {},
+  async find(): Promise<null> { return null; },
+};
 
 class SmokeFetcher implements FetcherPort {
   readonly calls: Array<{ url: string; opts: FetcherOptions }> = [];
@@ -88,6 +93,8 @@ const app = await createHttpApp({
   audit,
   allowedHosts: [`127.0.0.1:${port}`],
   allowedOrigins: ["https://client.test"],
+  trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+  proxyAuthSecret: randomBytes(32).toString("base64url"),
 });
 const token = await signAccessToken(
   { subject: "smoke-user", clientId: "smoke-client", scopes: ["fetch:read"] },
@@ -186,7 +193,8 @@ function hostedConfig(): BridgeConfig {
     scopeCatalog: ["fetch:read", "fetch:transform"],
     defaultScopes: ["fetch:read"],
     allowedOrigins: ["https://client.test"],
-    dcr: { mode: "stateless" },
+    dcr: { mode: "stored", store: smokeClientStore },
+    clientCredentials: { enabled: true },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,

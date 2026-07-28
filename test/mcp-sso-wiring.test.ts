@@ -15,6 +15,8 @@ import {
   createBridgeConfig,
   pkceChallenge,
   type BridgeConfig,
+  type ClientRegistration,
+  type ClientStore,
   type IdentityPort,
 } from "mcp-sso";
 import { createMemoryStore } from "mcp-sso/store/memory";
@@ -25,6 +27,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { createHttpApp } from "../src/interfaces/http/app.ts";
+import { TEST_PROXY_AUTH_SECRET } from "./support/proxy-auth.ts";
 
 const NOW_MS = Date.parse("2026-07-10T12:00:00.000Z");
 const ISSUER = "https://captatum.test";
@@ -74,7 +77,7 @@ const stubIdentity: IdentityPort = {
   },
 };
 
-function makeConfig(): BridgeConfig {
+function makeConfig(clientStore: ClientStore): BridgeConfig {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   return createBridgeConfig({
     issuer: ISSUER,
@@ -86,7 +89,8 @@ function makeConfig(): BridgeConfig {
     scopeCatalog: ["fetch:read", "fetch:transform"],
     defaultScopes: ["fetch:read"],
     allowedOrigins: [ORIGIN],
-    dcr: { mode: "stateless" },
+    dcr: { mode: "stored", store: clientStore },
+    clientCredentials: { enabled: true },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,
@@ -96,7 +100,15 @@ function makeConfig(): BridgeConfig {
 
 async function setup() {
   const clock = new FakeClock(NOW_MS);
-  const oauthConfig = makeConfig();
+  const clients = new Map<string, ClientRegistration>();
+  const clientStore: ClientStore = {
+    async save(client): Promise<void> { clients.set(client.clientId, structuredClone(client)); },
+    async find(clientId): Promise<ClientRegistration | null> {
+      const client = clients.get(clientId);
+      return client ? structuredClone(client) : null;
+    },
+  };
+  const oauthConfig = makeConfig(clientStore);
   const audit = new MemoryAudit();
   const store = createMemoryStore();
   const bridge = new Bridge({ config: oauthConfig, store, clock, audit });
@@ -105,6 +117,8 @@ async function setup() {
   const app = await createHttpApp({
     captatum, flavor: "hosted", bridge, authorizer, identity: stubIdentity, clock, audit,
     allowedHosts: [HOST], allowedOrigins: [ORIGIN],
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+    proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
   });
   return { app, oauthConfig, audit };
 }

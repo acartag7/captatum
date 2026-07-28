@@ -1,10 +1,11 @@
 # Dependency Ledger
 
-Status: Rechecked 2026-06-16 against the npm registry (publish dates verified
-via `https://registry.npmjs.org/<pkg>`). Re-check every pin immediately before
-any `pnpm install` / image build / deploy. All must clear `minimumReleaseAge:
-21600` (15 days) enforced in `pnpm-workspace.yaml`; run `pnpm audit --prod`
-after install.
+Status: Broad dependency review last completed 2026-06-16. The changed
+`mcp-sso@0.3.2` pin was rechecked 2026-07-28 against the npm registry, release
+tag, signature, and SLSA provenance. Re-check every new or changed pin
+immediately before any `pnpm install` / image build / deploy. All must clear
+`minimumReleaseAge: 21600` (15 days) enforced in `pnpm-workspace.yaml`; run
+`pnpm audit --prod` after install.
 
 This ledger mirrors the table format of
 `personal-memory-gateway/docs/dependency-ledger.md`. captatum is a networked
@@ -62,8 +63,7 @@ change needs an npm package for packaging, it must be added here and clear the
 | `@modelcontextprotocol/sdk` | `1.29.0` | `2026-03-30T16:50:42.718Z` | `2026-06-15` | https://www.npmjs.com/package/@modelcontextprotocol/sdk/v/1.29.0 | MCP protocol server + Streamable HTTP transport for the hosted `/mcp` endpoint. |
 | `fastify` | `5.8.5` | `2026-04-14T12:07:12.232Z` | `2026-06-15` | https://www.npmjs.com/package/fastify/v/5.8.5 | HTTP server + OAuth callback routing for the hosted flavor. |
 | `jose` | `6.2.3` | `2026-04-27T15:23:35.019Z` | `2026-06-15` | https://www.npmjs.com/package/jose/v/6.2.3 | OAuth ES256 JWT sign/verify + JWKS for gateway-owned auth (hosted flavor only). |
-| `mcp-sso` | `0.2.0` | `2026-07-07T12:16:07.589Z` | `2026-07-10` | https://www.npmjs.com/package/mcp-sso/v/0.2.0 | OAuth 2.1 / DCR / PKCE / Cloudflare-Access bridge — captatum's **own** OAuth stack, extracted + hardened into the owner's OSS library (acartag7/mcp-sso); the canonical auth implementation, too security-critical to maintain as a divergent in-repo fork. Captatum dogfoods it as its reference production consumer. Single runtime dep `jose` (already pinned); `mysql2` (already pinned) for the TiDB store path. **3 days old as of 2026-07-10 — under the 15-day gate; on `minimumReleaseAgeExclude` (own-package exception — the 15-day rule guards against stranger supply-chain compromise, inapplicable to the owner's own freshly-published library; scoped to `mcp-sso` ONLY, global rule unchanged). Tarball verified to ship `dist/` (106 files; `dist/index.js` + `dist/store/{sqlite,mysql}.js` + `dist/adapters/fastify.js` + `dist/identity/cloudflare-access.js`).** |
-| `mysql2` | `3.22.3` | `2026-04-27T02:16:51.908Z` | `2026-06-15` | https://www.npmjs.com/package/mysql2/v/3.22.3 | TiDB-compatible driver for the OAuth-state store in the hosted flavor (reuses personal-memory-infra TiDB). |
+| `mcp-sso` | `0.3.2` | `2026-07-28T13:02:16.463Z` | `2026-07-28` | https://www.npmjs.com/package/mcp-sso/v/0.3.2 | OAuth 2.1 / stored DCR / PKCE / Cloudflare-Access bridge plus the atomic machine-client lifecycle and stored-DCR grant-generation cutover used by Captatum. Captatum dogfoods the owner's OSS library (acartag7/mcp-sso) rather than maintaining a divergent auth fork. Single runtime dependency `jose` is already pinned; optional database peers are not installed for the v0.20.0 SQLite-only release. **Fresh on 2026-07-28 and therefore under the 15-day gate; allowed only by the scoped `minimumReleaseAgeExclude` for the owner's own `mcp-sso` package. Registry evidence: SHA-512 integrity `sha512-lH3+0yLABvjHx3Mpe+SIy0nYm8u5+abbtiHEc2BQvuAHBOScb0q6Ca92QVuyJK24KtTX6/71VDSYG9MyJ9QHLQ==`, SHA-1 `1be3f563b6bbf93b121bacbbf7d4e888bec176c4`, npm registry signature, and SLSA provenance. The 204-file tarball contains the declared root export, generation-aware store contract/use-case code, atomic machine-client lifecycle, and SQLite adapter. Tag `v0.3.2` resolves to release commit `cc9ab1c0f7e6200b9ef1db657ebef203dd117dcd`, which contains PR #147's reviewed grant-generation tree.** |
 | `wreq-js` | `2.3.1` | `2026-05-20T09:13:40.492Z` | `2026-06-15` | https://www.npmjs.com/package/wreq-js/v/2.3.1 | Tier-1 fetch: Rust-powered browser TLS/JA3+JA4 fingerprint impersonation for anti-bot bypass. The one hard ingredient; `fetch()`-compatible with native prebuilts, MIT. |
 | `psl` | `1.15.0` | `2024-11-07T20:54:05Z` (latest available; no newer release) | `2026-07-05` | https://www.npmjs.com/package/psl/v/1.15.0 | Public Suffix List (registrable-domain) lookup for the #111 Tier-3 POST first-party gate (`src/domain/registrable-domain.ts`) + the future bulk feature's same-registrable scope. Bundles the FULL PSL incl. private domains (multi-tenant suffixes: `github.io`/`appspot.com`/`herokuapp.com`), which `tldts` (ICANN-only) omits — that omission would collapse cross-tenant hosts to one registrable domain (the SSRF bypass #111 exists to prevent). MIT; well past the 15-day gate. Data-freshness caveat: a multi-tenant suffix added upstream after this release is not yet recognized (bounded by per-hop SSRF + no forwarded credentials) — see `docs/threat-model.md` "PSL data lag". Reused by #111 + bulk, so one PSL source of truth. |
 | `playwright` | `1.61.0` | `2026-06-15T10:06:22.269Z` | `2026-06-25` | https://www.npmjs.com/package/playwright/v/1.61.0 | Tier-3 render adapter, lazy `import("playwright")` only when `allowRender: true` and the shell-gate requires it. Bumped 1.60.0 → 1.61.0 in the CVE rebuild (#27) to patch a Chromium CVE; 10 days old as of 2026-06-25 — under the 15-day gate (clears 2026-06-30), CVE-driven exception. Browser sidecar bumped in lockstep. (Earlier `hono` audit noise was via `@modelcontextprotocol/sdk`; see P9 below.) |
@@ -84,7 +84,6 @@ Pass (eligible on `2026-06-16`, all published `<= 2026-06-01`):
 - `@modelcontextprotocol/sdk@1.29.0` (`2026-03-30`) — PASS
 - `fastify@5.8.5` (`2026-04-14`) — PASS
 - `jose@6.2.3` (`2026-04-27`) — PASS
-- `mysql2@3.22.3` (`2026-04-27`) — PASS
 - `wreq-js@2.3.1` (`2026-05-20`) — PASS
 - `playwright@1.60.0` (`2026-05-11`) — PASS
 - `zod@4.4.3` (`2026-05-04`) — PASS
@@ -137,22 +136,23 @@ lockfile. Do not add a new direct dependency or bump an existing pin without
 rechecking it here against the registry and the 15-day rule, and resolving or
 documenting any `pnpm audit --prod` finding.
 
-## Browser sidecar image (Dockerfile.browser)
+## Browser workload image (Dockerfile.browser)
 
-The Tier-3 sidecar runs Chromium in its own container; the gateway connects over
-CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`). The sidecar image MUST ship a Chromium
-whose major version matches the gateway's `playwright` pin above (`1.61.0` →
-Chromium 149), or the CDP connection can break.
+The Tier-3 browser workload runs Chromium in its own Pod/network namespace; the
+gateway connects over CDP (`CAPTATUM_BROWSER_CDP_ENDPOINT`). The image MUST ship
+a Chromium whose major version matches the gateway's `playwright` pin above
+(`1.61.0` → Chromium 149), or the CDP connection can break.
 
 - Image: `mcr.microsoft.com/playwright:v1.61.0-noble` (matches the npm pin; reuse
   Microsoft's signed Playwright image rather than building Chromium from source).
 - Re-check the image tag's publish date against the 15-day rule before pinning a
   newer one; record it here. `--no-sandbox` runs inside this container only
-  (container-isolated) — never in-process with the gateway (see threat-model.md).
+  inside the isolated, firewalled browser workload only — never in-process with
+  or network-namespace-shared with the gateway (see threat-model.md).
 
 ## Multi-arch GHCR images (release.yml)
 
-Both images (gateway `Dockerfile` + sidecar `Dockerfile.browser`) build
+Both images (gateway `Dockerfile` + browser `Dockerfile.browser`) build
 **linux/amd64 + linux/arm64** so the arm64 Mac mini k3s deploy pulls
 `ghcr.io/acartag7/captatum:latest` natively instead of building locally. arm64
 is cross-built via QEMU (`docker/setup-qemu-action`) on the amd64 runner. Both

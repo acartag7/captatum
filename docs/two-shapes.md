@@ -18,7 +18,7 @@ engine, so the marginal maintenance cost is small and well-isolated.
 | **Auth** | OAuth gateway (PKCE, scopes, audit) | None — single-user, loopback only |
 | **Reachable from** | Web agents (claude.ai, chatgpt.com), shared users | One local agent (Claude Code, desktop clients) |
 | **Entrypoint** | `src/server.ts` → `createHttpApp` | `src/interfaces/mcp/stdio-bridge.ts` → `createLocalMcpServer` |
-| **Tier-3 browser** | A separate sidecar container over CDP (blast-radius separation) | In-process Chromium on the user's machine (sandbox on) |
+| **Tier-3 browser** | A separate browser Pod/network namespace over CDP, with default-deny direct egress | In-process Chromium on the user's machine (sandbox on) |
 | **Core engine** | **Identical** — same `captatum` use case, tool schema, guarded fetch | **Identical** |
 
 Both share `createCaptatumMcpServer`, so the tool definition, server instructions,
@@ -27,8 +27,8 @@ and provenance shape are the same in either shape (PR: MCP discoverability).
 ## Recommendation: keep both, hosted primary
 
 ### Why hosted is primary
-Tier-3 rendering needs a real browser, which needs a real deployment (a sidecar
-container, lifecycle, isolation). The hosted shape is the only one that serves web
+Tier-3 rendering needs a real browser, which needs a real deployment (a separate
+network namespace, enforced egress containment, lifecycle, isolation). The hosted shape is the only one that serves web
 agents and multiple users — the production use case. Self-host templates
 (Railway/EC2/Mac Mini) and the release pipeline target it.
 
@@ -54,7 +54,7 @@ agents and multiple users — the production use case. Self-host templates
 ### The "Tier-3 needs a browser either way" point — addressed
 It is true that JS rendering needs Chromium in *both* shapes, so "local" is not
 lighter than hosted for JS-heavy pages. But the two use the browser differently:
-the hosted shape isolates it in a sidecar (required for multi-tenant safety), while
+the hosted shape isolates it in a separate browser workload (required for multi-tenant safety), while
 the local shape uses the developer's own Chromium in-process (acceptable for a
 single trusted user). They are not redundant; the browser requirement does not
 argue for dropping the local shape.

@@ -8,6 +8,7 @@ import {
   signAccessToken,
   createBridgeConfig,
   type BridgeConfig,
+  type ClientStore,
   type IdentityPort,
 } from "mcp-sso";
 import { createMemoryStore } from "mcp-sso/store/memory";
@@ -20,10 +21,15 @@ import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { assertHostedFlavor, createHttpApp, HostedFlavorError } from "../src/interfaces/http/app.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS } from "../src/interfaces/mcp/schema.ts";
+import { TEST_PROXY_AUTH_SECRET } from "./support/proxy-auth.ts";
 
 const NOW_MS = Date.parse("2026-06-16T12:00:00.000Z");
 const HOST = "captatum.test";
 const ORIGIN = "https://client.test";
+const testClientStore: ClientStore = {
+  async save(): Promise<void> {},
+  async find(): Promise<null> { return null; },
+};
 
 // Synthetic CF-Access identity for the hosted app (the /oauth/authorize route is
 // registered but not driven by these tests — they mint tokens directly — so a
@@ -52,6 +58,8 @@ test("HTTP MCP listener refuses local-binary instead of exposing an unauthentica
       audit: new MemoryAudit(),
       allowedHosts: [HOST],
       allowedOrigins: [ORIGIN],
+      trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+      proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
     }),
     (error: unknown) => error instanceof HostedFlavorError,
   );
@@ -257,6 +265,8 @@ async function setup(options: { transformer?: TransformPort } = {}) {
     audit,
     allowedHosts: [HOST],
     allowedOrigins: [ORIGIN],
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+    proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
   });
   return {
     app,
@@ -343,7 +353,8 @@ function hostedConfig(): BridgeConfig {
     scopeCatalog: ["fetch:read", "fetch:transform"],
     defaultScopes: ["fetch:read"],
     allowedOrigins: [ORIGIN],
-    dcr: { mode: "stateless" },
+    dcr: { mode: "stored", store: testClientStore },
+    clientCredentials: { enabled: true },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,

@@ -1,12 +1,11 @@
-# Captatum self-host (hosted flavor) — gateway + browser sidecar + SQLite volume.
+# Captatum self-host (hosted flavor) — gateway + SQLite volume.
 # This is the COMMON base for EC2 / Mac Mini / any Docker host.
 #
-# Trust model: the gateway is the ONLY container with OAuth keys and the SQLite
-# file. The browser sidecar shares the GATEWAY's network namespace
-# (network_mode: service:gateway), so its loopback-only CDP is reachable from the
-# gateway as 127.0.0.1:9222 — the shared-network-namespace pod pattern. A Chromium
-# compromise escapes into the sidecar (no OAuth keys, no SQLite, no env), not the
-# gateway. See docs/threat-model.md.
+# Trust model: the generic Compose shape intentionally does not enable Tier-3.
+# A no-sandbox browser must have a distinct network namespace and enforced
+# egress firewall; sharing the gateway namespace lets it impersonate the
+# gateway after a restart. The production Kubernetes topology supplies that
+# boundary. See docs/contracts.md and docs/threat-model.md.
 #
 # Image: published by release CI to ghcr.io/acartag7/captatum and
 # ghcr.io/acartag7/captatum-browser. Set CAPTATUM_TAG to a release tag, or build
@@ -36,28 +35,25 @@ services:
       # The container must bind 0.0.0.0 so the published host port can reach it
       # (the HOST port publish below stays 127.0.0.1 — loopback on the host).
       HOST: "0.0.0.0"
-      # Tier-3 renders in the sidecar over the SHARED loopback (the browser
-      # service attaches to this gateway's network namespace).
-      CAPTATUM_BROWSER_CDP_ENDPOINT: "http://127.0.0.1:9222"
-      # Default SQLite store lives on the persistent volume (no external DB).
+      # OAuth state + stored clients share the private 0700 /data volume.
       CAPTATUM_SQLITE_PATH: "/data/captatum.sqlite"
+      # A host request to a Docker-published loopback port reaches the container
+      # from the bridge gateway, not from container loopback. Pin both the
+      # bridge and its only trusted peer so public callers keep separate rate
+      # buckets. The edge authenticator from ../.env is still required.
+      CAPTATUM_TRUSTED_PROXY_CIDRS: "172.29.255.249/32"
     volumes:
       - captatum-data:/data
     ports:
       - "127.0.0.1:3000:3000"
     restart: unless-stopped
 
-  browser:
-    image: ghcr.io/acartag7/captatum-browser:${CAPTATUM_TAG:-latest}
-    build:
-      context: ..
-      dockerfile: Dockerfile.browser
-    # Share the gateway's network namespace so the gateway reaches the sidecar's
-    # loopback-only CDP at 127.0.0.1:9222 (no ports/expose — same namespace).
-    network_mode: "service:gateway"
-    depends_on:
-      - gateway
-    restart: unless-stopped
-
 volumes:
   captatum-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: "172.29.255.248/29"
+          gateway: "172.29.255.249"

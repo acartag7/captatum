@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# EC2 cloud-init user-data for a self-hosted captatum gateway + browser sidecar.
+# EC2 cloud-init user-data for a self-hosted captatum gateway.
 # Paste into the EC2 launch "User data" field. Tested on Amazon Linux 2023 and
 # Ubuntu 24.04. Front it with a Cloudflare Tunnel (set up separately) to
 # 127.0.0.1:3000 — the gateway is never exposed directly.
@@ -31,21 +31,22 @@ services:
     image: ghcr.io/acartag7/captatum:${CAPTATUM_TAG:-latest}
     environment:
       HOST: "0.0.0.0"
-      CAPTATUM_BROWSER_CDP_ENDPOINT: "http://127.0.0.1:9222"
       CAPTATUM_SQLITE_PATH: "/data/captatum.sqlite"
+      CAPTATUM_TRUSTED_PROXY_CIDRS: "172.29.255.249/32"
     env_file: /opt/captatum/.env
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - captatum-data:/data
     restart: unless-stopped
-  browser:
-    image: ghcr.io/acartag7/captatum-browser:${CAPTATUM_TAG:-latest}
-    network_mode: "service:gateway"
-    depends_on: [gateway]
-    restart: unless-stopped
 volumes:
   captatum-data:
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: "172.29.255.248/29"
+          gateway: "172.29.255.249"
 YAML
 
 # 3) .env must exist before up. If it doesn't, exit non-zero so cloud-init marks
