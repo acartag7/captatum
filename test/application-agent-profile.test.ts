@@ -6,6 +6,11 @@ import { buildStructuredContent } from "../src/interfaces/mcp/shape.ts";
 
 const DOCUMENT = '{"is_job":true}';
 const CANONICAL_LONG_TITLE = `AB${"x".repeat(137)}…`;
+const CONTROL_TITLE =
+  "A\u0085B\u009fC\u061cD\u2066E\u2069F\u2060G\ufeffH\u2028I\u2029J\ue000K\ud800L";
+const CANONICAL_CONTROL_TITLE = "ABCDEFGHIJKL";
+const LONG_UNICODE_TITLE = `${"x".repeat(138)}🧪yz`;
+const CANONICAL_LONG_UNICODE_TITLE = `${"x".repeat(138)}🧪…`;
 
 function result(overrides: Partial<Result> = {}): Result {
   return {
@@ -45,15 +50,54 @@ function result(overrides: Partial<Result> = {}): Result {
 }
 
 for (const profileCase of [
-  { name: "no optional fields", title: undefined, quality: undefined },
-  { name: "canonical title", title: `A\nB${"x".repeat(149)}`, quality: undefined },
-  { name: "content quality", title: undefined, quality: "low_value" as const },
+  {
+    name: "no optional fields",
+    title: undefined,
+    expectedTitle: undefined,
+    quality: undefined,
+  },
+  {
+    name: "canonical title",
+    title: `A\nB${"x".repeat(149)}`,
+    expectedTitle: CANONICAL_LONG_TITLE,
+    quality: undefined,
+  },
+  {
+    name: "Unicode controls and bidi",
+    title: CONTROL_TITLE,
+    expectedTitle: CANONICAL_CONTROL_TITLE,
+    quality: undefined,
+  },
+  {
+    name: "Unicode-safe clipping",
+    title: LONG_UNICODE_TITLE,
+    expectedTitle: CANONICAL_LONG_UNICODE_TITLE,
+    quality: undefined,
+  },
+  {
+    name: "international visible text",
+    title: "Résumé 東京 🧪",
+    expectedTitle: "Résumé 東京 🧪",
+    quality: undefined,
+  },
+  {
+    name: "content quality",
+    title: undefined,
+    expectedTitle: undefined,
+    quality: "low_value" as const,
+  },
   {
     name: "title and content quality",
     title: `A\nB${"x".repeat(149)}`,
+    expectedTitle: CANONICAL_LONG_TITLE,
     quality: "low_value" as const,
   },
-  { name: "empty canonical title", title: "\n\u202e\u200b", quality: undefined },
+  {
+    name: "empty canonical title",
+    title: "\n\u202e\u200b",
+    expectedTitle: undefined,
+    quality: undefined,
+  },
 ]) {
   test(`frozen application-agent profile: ${profileCase.name}`, () => {
     const withQuality = profileCase.quality === undefined
@@ -67,9 +111,7 @@ for (const profileCase of [
         };
     const value = result({ title: profileCase.title, ...withQuality });
     const receipt = buildStructuredContent(value, false);
-    const expectedTitle = profileCase.title?.startsWith("A")
-      ? CANONICAL_LONG_TITLE
-      : undefined;
+    const expectedTitle = profileCase.expectedTitle;
     const expectedReceipt = {
       schemaVersion: 1,
       ok: true,
@@ -134,6 +176,22 @@ for (const profileCase of [
     assert.doesNotMatch(text.split("\n", 1)[0]!, /contentQuality|truncated/);
   });
 }
+
+test("non-profile MCP title channels use the same allowlist", () => {
+  const value = result({
+    output: "summary",
+    outputRequested: "summary",
+    title: CONTROL_TITLE,
+  });
+  const receipt = buildStructuredContent(value, false);
+  const text = resultToMcpText(value);
+  assert.equal(receipt.title, CANONICAL_CONTROL_TITLE);
+  assert.match(text, new RegExp(`^title: ${CANONICAL_CONTROL_TITLE}$`, "m"));
+  assert.doesNotMatch(
+    JSON.stringify(receipt),
+    /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/u,
+  );
+});
 
 test("non-quality warnings remain partial in the frozen profile", () => {
   const receipt = buildStructuredContent(result({

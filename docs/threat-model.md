@@ -261,6 +261,13 @@ the contract reference; this file is the security reasoning.
 - Write an audit event for every tool call.
 - Treat fetched content as untrusted data — never instructions (prompt-injection
   control).
+- Fetched titles enter both MCP text and structured presentation channels
+  through one Unicode-category allowlist. Only `L`, `M`, `N`, `P`, `S`, and
+  `Zs` code points survive before a 140-code-point clip; Unicode controls,
+  formats (including C1, bidi, and zero-width controls), line/paragraph
+  separators, surrogates, private-use, and unassigned code points cannot forge
+  a header line or reorder hidden title text. The internal fetched Result stays
+  unchanged as untrusted data.
 - **`captatum_bulk` fan-out** is bounded per-call by the BulkGuard caps (see the
   "Bulk fan-out (captatum_bulk)" section). The orchestrator composes the single-
   URL use case per seed and **adds no egress path**: SSRF, Tier-3 in-browser, and

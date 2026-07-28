@@ -3,7 +3,7 @@ import { classifyAccess, classifyContentType, hasContent, type AccessInfo, type 
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
 import { shapeRenderDiagnostics } from "./egress-shaping.ts";
 import {
-  canonicalApplicationAgentTitle,
+  canonicalMcpTitle,
   isApplicationAgentProfile,
 } from "./application-agent-profile.ts";
 
@@ -28,9 +28,7 @@ export function buildStructuredContent(result: Result, debug: boolean): Record<s
     : split.warnings;
   const errors = split.errors;
   const status = classifyStatus(result, warnings);
-  const title = profile
-    ? canonicalApplicationAgentTitle(result.title)
-    : result.title;
+  const title = canonicalMcpTitle(result.title);
 
   const lean: Record<string, unknown> = {
     schemaVersion: result.schemaVersion,

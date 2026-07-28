@@ -521,6 +521,15 @@ Default (lean) `structuredContent`:
 ```
 
 Rules:
+- **title:** every MCP presentation channel canonicalizes the untrusted page
+  title through one Unicode-category allowlist before emission. Only letters
+  (`L`), marks (`M`), numbers (`N`), punctuation (`P`), symbols (`S`), and
+  space separators (`Zs`) survive. Controls and format characters (`Cc`/`Cf`,
+  including C1 controls, bidi isolates/overrides, and zero-width formats), line
+  and paragraph separators (`Zl`/`Zp`), surrogates, private-use, and unassigned
+  code points are removed. The result is clipped to 140 Unicode code points
+  without splitting a surrogate pair and omitted when empty. The internal
+  `Result.title` remains unchanged.
 - **errors vs warnings:** fatal ⟺ `tier === "error"`, except `schema_knob_extracted`, which is always a non-fatal warning even when a later fetch rejects. Everything else in `Result.errors` becomes a `warning` outside `tier: "error"`.
 - **status:** `fail` when `tier === "error"`, the response was 4xx/5xx (the body is an error page, not usable content), or no body content was returned; `partial` when content was returned but warnings exist or the summary/extract transform fell back to raw (`transform.provider === "none"`); else `pass`. A successful candidate-MODEL fallback is a `pass` (not `partial`) — the failed-primary list rides on `transform.fallbackFrom` (debug + audit only), not a warning (#82).
 - **access.gateReason:** `captcha` when the fetched bytes are a **vendor-attributed** bot-protection challenge (a Cloudflare/Akamai/PerimeterX/DataDome/Imperva challenge-only body marker or the `cf-mitigated` header), with the vendor in `access.challengeProvider` (#41); `bot_verification` when a 429/503 response body is a **generic** browser-verification interstitial (e.g. "verifying your browser") with no attributable vendor — status-gated (429/503) + non-JSON; the phrase is scanned over the **full response body** (it can sit deep under a large `<head>` — Vercel's checkpoint buries it ~28 KB in), so the scan window is never the reason a wall is missed, `challengeProvider` absent (#151); `paywall` when JSON-LD declares `isAccessibleForFree: false`; `byte_cap` when the response was truncated at the cap; `js-required` when no content was returned on a page that needed JS we could not run (render-blocked/render-unavailable/`jsRequired`); `http_error` when the response was 4xx/5xx (an error page — the body is still returned in `result` for the agent to read the server's message); else `none`. `captcha`/`bot_verification` take precedence over `http_error` so a 429/503 challenge wall is named as such, not as a generic error page.
@@ -609,12 +618,12 @@ The provenance keys and header lines are in exactly the shown order. Generic
 provenance additions such as `truncated` or `contentQuality` are suppressed for
 this profile; `contentQuality` belongs only in its fixed header position.
 `title` and `contentQuality` are the only conditional header lines and keep
-their shown positions. The title is stripped of controls/bidi/zero-width
-characters, clipped to 140 characters, and the same canonical value is emitted
-in `structuredContent`; a title that canonicalizes to empty is omitted from both
-channels. There is one blank line after the provenance comment and one after the
-header. No extra header line is permitted. The bytes after the second blank
-line are the complete extracted JSON document.
+their shown positions. The title uses the shared Unicode-category allowlist
+above, is clipped to 140 Unicode code points, and the same canonical value is
+emitted in `structuredContent`; a title that canonicalizes to empty is omitted
+from both channels. There is one blank line after the provenance comment and
+one after the header. No extra header line is permitted. The bytes after the
+second blank line are the complete extracted JSON document.
 
 The default `structuredContent` object has exactly these required keys, in any
 JSON object order: `schemaVersion`, `ok`, `status`, `url`, `finalUrl`, `output`,

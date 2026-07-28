@@ -2,7 +2,7 @@ import type { AttemptTrace, Result } from "../../domain/result.ts";
 import { classifyAccess, classifyContentType, truncatedReason } from "../../application/classify.ts";
 import { isJsonContentType } from "../../infrastructure/http/body.ts";
 import { redactSignedQueryParams } from "../../infrastructure/llm/safety.ts";
-import { canonicalApplicationAgentTitle } from "./application-agent-profile.ts";
+import { canonicalMcpTitle } from "./application-agent-profile.ts";
 
 /** Max attempt lines emitted in the debug text block (MCP debug + CLI --debug). */
 const DEBUG_ATTEMPTS_CAP = 50;
@@ -35,7 +35,7 @@ export function resultToMcpText(
     }
     return `${provenance}\n${result.result}`;
   }
-  const header = envelopeHeader(result, frozenApplicationAgentProfile);
+  const header = envelopeHeader(result);
   const base = header ? `${provenance}\n\n${header}\n\n${result.result}` : `${provenance}\n${result.result}`;
   // #45: for text-forward clients (which render content[0].text but not structuredContent), surface a
   // compact diagnostics block inline so `debug:true` is actually visible there.
@@ -88,14 +88,10 @@ function isJsonBody(result: Result): boolean {
  * Deterministic, so it never contradicts itself or says a present field is
  * "not provided". Raw output is excluded (the caller asked for clean content).
  */
-function envelopeHeader(result: Result, frozenProfile: boolean): string {
+function envelopeHeader(result: Result): string {
   const access = classifyAccess(result);
   const images = result.structured?.images ?? [];
-  const title = frozenProfile
-    ? canonicalApplicationAgentTitle(result.title)
-    : result.title
-      ? clip(sanitizePrintable(result.title), 140)
-      : undefined;
+  const title = canonicalMcpTitle(result.title);
   const lines: Array<string | null> = [
     `contentType: ${classifyContentType(result)}`,
     title ? `title: ${title}` : null,
@@ -143,14 +139,4 @@ function provenanceLine(
 
 function escapeField(value: string): string {
   return JSON.stringify(value).slice(1, -1).replaceAll("--", "\\u002d\\u002d");
-}
-
-/** Strip ALL control chars (incl. CR/LF — header-line forging), bidi overrides,
- *  and zero-width chars from untrusted display fields (INJ-7). */
-function sanitizePrintable(value: string): string {
-  return value.replace(/[\x00-\x1f\x7f​-‏‪-‮]/g, "");
-}
-
-function clip(value: string, max: number): string {
-  return value.length <= max ? value : `${value.slice(0, max - 1).trimEnd()}…`;
 }
