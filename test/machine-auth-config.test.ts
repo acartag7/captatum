@@ -73,10 +73,20 @@ test("final hosted config enables client credentials only with the stored Client
   const runtime = loadCaptatumAuth(validHostedEnv());
   assert.equal(runtime.flavor, "hosted");
   assert.ok(runtime.material);
+  assert.equal(runtime.material.cimd?.enabled, true);
+  assert.deepEqual(Object.keys(runtime.material.cimd ?? {}), ["enabled"]);
+  assert.equal(Object.getPrototypeOf(runtime.material.cimd), null);
+  assert.equal(
+    Object.isFrozen(runtime.material.cimd),
+    true,
+    "CIMD is validated and frozen before any persistent store is opened",
+  );
   const config = createMcpSsoConfig(runtime.material, clientStore);
   assert.equal(config.dcr.mode, "stored");
   if (config.dcr.mode === "stored") assert.equal(config.dcr.store, clientStore);
   assert.deepEqual(config.clientCredentials, { enabled: true });
+  assert.equal(config.cimd?.enabled, true);
+  assert.deepEqual(Object.keys(config.cimd ?? {}), ["enabled"]);
   assert.equal(Object.isFrozen(config), true);
 });
 

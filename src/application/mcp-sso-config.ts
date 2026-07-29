@@ -63,6 +63,7 @@ export function validateMcpSsoMaterial(
     defaultScopes: [OAUTH_SCOPES[0]],
     allowedOrigins: mustListEnv(env, "MCP_ALLOWED_ORIGINS"),
     dcr: { mode: "stateless" },
+    cimd: { enabled: true },
     dev: envString(env, "OAUTH_ALLOW_INSECURE_LOCALHOST") === "true"
       ? { allowInsecureLocalhost: true }
       : undefined,

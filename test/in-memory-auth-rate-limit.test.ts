@@ -40,10 +40,31 @@ test("auth limiter bounds source-key storage and fails closed at capacity", asyn
   );
 });
 
+test("auth limiter gives authorize and CIMD distinct bounded budgets", async () => {
+  const clock = new MutableClock(1_000);
+  const limiter = new InMemoryAuthRateLimit(clock);
+  for (let attempt = 0; attempt < 120; attempt++) {
+    assert.equal(await limiter.check("authorize:192.0.2.1"), true);
+  }
+  assert.equal(await limiter.check("authorize:192.0.2.1"), false);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    assert.equal(await limiter.check("cimd:192.0.2.1"), true);
+  }
+  assert.equal(await limiter.check("cimd:192.0.2.1"), false);
+  assert.equal(
+    await limiter.check("token:192.0.2.1"),
+    true,
+    "authorize and CIMD exhaustion cannot consume the token bucket",
+  );
+  clock.advance(10 * 60 * 1000);
+  assert.equal(await limiter.check("authorize:192.0.2.1"), true);
+  assert.equal(await limiter.check("cimd:192.0.2.1"), true);
+});
+
 test("auth limiter denies malformed keys, unknown surfaces, and invalid clocks", async () => {
   const validClock = new MutableClock(1_000);
   const limiter = new InMemoryAuthRateLimit(validClock);
-  assert.equal(await limiter.check("authorize:192.0.2.1"), false);
+  assert.equal(await limiter.check("upstream:192.0.2.1"), false);
   assert.equal(await limiter.check(""), false);
   assert.equal(
     await new InMemoryAuthRateLimit({ nowMs: () => Number.NaN }).check("register:source"),

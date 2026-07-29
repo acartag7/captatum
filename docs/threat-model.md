@@ -19,6 +19,11 @@ the contract reference; this file is the security reasoning.
 
 - Browser and agent clients are outside the gateway trust boundary.
 - The gateway is the security boundary for scopes and tools.
+- A CIMD-capable OAuth client supplies an HTTPS `client_id` that names an
+  external metadata document. That value crosses a distinct auth-egress trust
+  boundary: mcp-sso, not Captatum's page-fetch stack, admits the raw URL,
+  resolves and pins its public IP, performs the bounded TLS request, validates
+  the document, and exact-matches identity plus redirect before consent.
 - Forwarded client IP headers cross the gateway boundary only when the socket
   peer is in the boot-validated `CAPTATUM_TRUSTED_PROXY_CIDRS` allowlist **and**
   `X-Captatum-Proxy-Auth` timing-safe-matches the 32-byte
@@ -65,6 +70,20 @@ the contract reference; this file is the security reasoning.
   Session IDs are never auth.
 - Per-request scope enforcement: `fetch:read` default, `fetch:transform` to use
   the Transform stage.
+- Hosted OAuth enables CIMD before any persistent store is opened and advertises
+  `client_id_metadata_document_supported: true`; stored DCR and its registration
+  endpoint remain available as fallback. CIMD metadata is untrusted and goes
+  only through mcp-sso's production-closed guarded resolver: HTTPS/path/control
+  admission, full special-use IP denial, DNS pinning, TLS verification,
+  redirect refusal, 200 JSON-only response, decompressed-byte and wall-clock
+  caps, strict document projection, exact raw `client_id` comparison, and exact
+  redirect matching. The fail-closed auth limiter permits at most 120
+  `authorize:` attempts per source per minute and, in a distinct bucket, 10
+  `cimd:` resolutions per source per 10 minutes before resolution;
+  single-flight, global in-flight, per-fetch waiter, and cache-TTL caps bound
+  attacker-driven work. Unknown limiter surfaces deny. Only validated
+  public-client metadata reaches consent; document-contained URLs are never
+  fetched, and document key material is never used for client authentication.
 - Machine authentication is opt-in only with stored DCR. Machine clients are
   provisioned, rotated, listed, and disabled out of band through one local
   operator CLI; there is no HTTP provisioning endpoint and open DCR rejects
@@ -300,6 +319,13 @@ the contract reference; this file is the security reasoning.
 | Asset | STRIDE | Threat | Required control | Residual |
 | --- | --- | --- | --- | --- |
 | Raw machine-client secret | Information disclosure / Spoofing | A stolen secret can mint bearer tokens as the machine client. Unlike refresh-token replay, repeated use of a machine secret produces no cryptographic theft signal and cannot identify which holder used it. | Secret is returned once, never logged, persisted only as SHA-256; scope is capped; rotate uses a bounded two-secret overlap and disable clears accepted hashes; access tokens live at most 600 seconds. Operator rotation is the recovery for suspected theft. | Theft remains undetectable until external evidence or operator suspicion triggers rotate/disable. Rotation limits future use but cannot recall bearer JWTs already issued; they expire within 600 seconds. |
+
+## CIMD STRIDE
+
+| Asset | STRIDE | Threat | Required control | Residual |
+| --- | --- | --- | --- | --- |
+| Gateway network authority and OAuth client identity | Spoofing / Tampering / Denial of service | An attacker presents a crafted URL-shaped `client_id` to reach private services, exploit parser differences, substitute a redirect identity, or consume DNS/TLS/body resources. | mcp-sso owns one raw-string admission and comparison path; resolves all addresses, denies special-use ranges, pins the validated IP for TLS, refuses redirects, bounds time/bytes/concurrency/waiters/cache, validates a closed public-client document, exact-matches `client_id` and redirect, applies Captatum's fail-closed 10-per-source/10-minute `cimd:` budget after its separate `authorize:` budget, and emits metadata-only CIMD audit events. | The gateway intentionally makes bounded outbound HTTPS requests to public client metadata hosts. A public host can stay slow or unavailable; the request fails closed and the connector cannot authenticate until its document is valid and reachable. |
+| User consent decision | Spoofing | A malicious public client uses a lookalike domain or misleading `client_name` to trick the user into approving it. | The validated client name is escaped, the exact client identifier is bound into the signed flow, consent is frame-blocked, and the redirect must match the validated document. | Domain lookalikes remain a human-judgment risk; technical validation cannot prove the operator behind a public domain is trustworthy. |
 
 ## Auth Limits
 
