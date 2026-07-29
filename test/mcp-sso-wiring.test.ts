@@ -26,6 +26,7 @@ import type { FetcherOptions, FetcherPort, FetcherResult } from "../src/applicat
 import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts";
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
+import { InMemoryAuthRateLimit } from "../src/infrastructure/in-memory-auth-rate-limit.ts";
 import { createHttpApp } from "../src/interfaces/http/app.ts";
 import { TEST_PROXY_AUTH_SECRET } from "./support/proxy-auth.ts";
 
@@ -39,6 +40,8 @@ const IDENTITY_HEADER = "cf-access-jwt-assertion";
 const STUB_TOKEN = "stub-good";
 const SUBJECT = "agent@test";
 const FIXTURE = "wiring fixture body";
+const CIMD_CLIENT_ID = "https://metadata.client.test/client";
+const CIMD_CLIENT_NAME = "Hosted Connector";
 
 class FakeClock implements ClockPort {
   private readonly ms: number;
@@ -91,6 +94,7 @@ function makeConfig(clientStore: ClientStore): BridgeConfig {
     allowedOrigins: [ORIGIN],
     dcr: { mode: "stored", store: clientStore },
     clientCredentials: { enabled: true },
+    cimd: { enabled: true },
     accessTokenTtlSeconds: 600,
     refreshTokenTtlSeconds: 2_592_000,
     consentTokenTtlSeconds: 300,
@@ -111,7 +115,45 @@ async function setup() {
   const oauthConfig = makeConfig(clientStore);
   const audit = new MemoryAudit();
   const store = createMemoryStore();
-  const bridge = new Bridge({ config: oauthConfig, store, clock, audit });
+  let cimdFetches = 0;
+  const cimdBody = new TextEncoder().encode(JSON.stringify({
+    client_id: CIMD_CLIENT_ID,
+    client_name: CIMD_CLIENT_NAME,
+    redirect_uris: [REDIRECT],
+    token_endpoint_auth_method: "none",
+  }));
+  const bridge = new Bridge({
+    config: oauthConfig,
+    store,
+    clock,
+    audit,
+    rateLimit: new InMemoryAuthRateLimit(clock),
+    cimdResolver: {
+      async resolve(hostname) {
+        assert.equal(hostname, "metadata.client.test");
+        return [{ address: "93.184.216.34", family: 4 }];
+      },
+    },
+    cimdTransport: {
+      async connectAndGet(request) {
+        cimdFetches += 1;
+        assert.equal(request.connectIp, "93.184.216.34");
+        assert.equal(request.redirect, "manual");
+        return {
+          status: 200,
+          redirected: false,
+          finalUrl: CIMD_CLIENT_ID,
+          headersDistinct: {
+            "content-type": ["application/json"],
+            "cache-control": ["max-age=3600"],
+          },
+          encodedBody: new ReadableStream<Uint8Array>({
+            start(controller) { controller.enqueue(cimdBody); controller.close(); },
+          }),
+        };
+      },
+    },
+  });
   const authorizer = new RequestAuthorizer({ config: oauthConfig, clock, audit });
   const captatum = createCaptatumUseCase({ fetcher: new FakeFetcher(), extractHtml, clock });
   const app = await createHttpApp({
@@ -120,7 +162,7 @@ async function setup() {
     trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
     proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
   });
-  return { app, oauthConfig, audit };
+  return { app, oauthConfig, audit, cimdFetches: () => cimdFetches };
 }
 
 test("mcp-sso flow: register → authorize → approve → token → protected /mcp 200", async () => {
@@ -130,9 +172,12 @@ test("mcp-sso flow: register → authorize → approve → token → protected /
     // 1. metadata
     const meta = await ctx.app.inject({ method: "GET", url: "/.well-known/oauth-authorization-server" });
     assert.equal(meta.statusCode, 200);
-    assert.equal(JSON.parse(meta.body).issuer, ISSUER);
+    const metadata = JSON.parse(meta.body);
+    assert.equal(metadata.issuer, ISSUER);
+    assert.equal(metadata.client_id_metadata_document_supported, true);
+    assert.equal(metadata.registration_endpoint, `${ISSUER}/oauth/register`);
 
-    // 2. register
+    // 2. register through the retained DCR fallback
     const reg = await ctx.app.inject({
       method: "POST", url: "/oauth/register",
       headers: { "content-type": "application/json" },
@@ -233,6 +278,37 @@ test("/mcp without a token → 401 with an RFC 9728 WWW-Authenticate challenge",
     assert.ok(
       ctx.audit.authEvents.some((e) => e.event === "auth.request" && e.status === "failure"),
       "the 401 wrote an auth.request failure event into the unified audit sink",
+    );
+  } finally {
+    await ctx.app.close();
+  }
+});
+
+test("CIMD authorize reaches the guarded resolver under Captatum's auth limiter", async () => {
+  const ctx = await setup();
+  try {
+    const verifier = "v".repeat(43);
+    const authPage = await ctx.app.inject({
+      method: "GET",
+      url: `/oauth/authorize?${new URLSearchParams({
+        response_type: "code",
+        client_id: CIMD_CLIENT_ID,
+        redirect_uri: REDIRECT,
+        code_challenge: pkceChallenge(verifier),
+        code_challenge_method: "S256",
+        scope: "fetch:read",
+        state: "cimd-state",
+      })}`,
+      headers: { [IDENTITY_HEADER]: STUB_TOKEN },
+    });
+    assert.equal(authPage.statusCode, 200, authPage.body);
+    assert.equal(ctx.cimdFetches(), 1);
+    assert.match(authPage.body, new RegExp(CIMD_CLIENT_NAME));
+    assert.ok(
+      ctx.audit.authEvents.some((event) =>
+        event.event === "oauth.cimd.fetch" && event.status === "success"
+      ),
+      "successful CIMD resolution is recorded without document contents",
     );
   } finally {
     await ctx.app.close();

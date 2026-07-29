@@ -770,6 +770,8 @@ async function assertShippedMachineCall(
   );
   assert.equal(metadata.statusCode, 200, metadata.body);
   const metadataBody = JSON.parse(metadata.body);
+  assert.equal(metadataBody.client_id_metadata_document_supported, true);
+  assert.equal(metadataBody.registration_endpoint, `${ISSUER}/oauth/register`);
   assert.ok(metadataBody.grant_types_supported.includes("client_credentials"));
   assert.ok(
     metadataBody.token_endpoint_auth_methods_supported.includes(

@@ -737,6 +737,29 @@ Auth is **conditional on deployment flavor** (see Deployment). Two flavors:
 
 The OAuth contract below applies only to the hosted flavor. captatum's hosted OAuth is powered by the **mcp-sso** library (`mcp-sso@0.3.2`, acartag7/mcp-sso) — captatum's own OAuth 2.1 / DCR / PKCE / Cloudflare-Access stack, extracted + hardened into the owner's OSS library; captatum dogfoods it as its reference production consumer. The mechanics (DCR/PKCE/consent, token sign+verify, JWKS, AS/PRM metadata, the OAuth-state store + replay/rotation) live in the library; captatum owns its scope policy (`fetch:read`/`fetch:transform`), bounded SQLite deployment adapter, and the hosted-vs-local flavor boundary.
 
+Hosted Captatum enables mcp-sso's Client ID Metadata Document (CIMD) support.
+RFC 8414 authorization-server metadata therefore includes
+`client_id_metadata_document_supported: true`. A connector that supports CIMD
+may use an admitted `https://` metadata-document URL as its `client_id` without
+first creating a stored registration. The existing
+`registration_endpoint: <issuer>/oauth/register` remains advertised and stored
+DCR remains enabled as the fallback for clients that do not support CIMD.
+Enabling CIMD does not relax DCR redirect policy and does not turn an arbitrary
+URL into a stored client record.
+
+CIMD resolution is mcp-sso's guarded auth-egress path, not Captatum's page-fetch
+path. The presented `client_id` is untrusted: production accepts only the
+library's closed HTTPS URL grammar, resolves and validates every address before
+an IP-pinned TLS connection, refuses redirects, requires a bounded JSON
+response, and exact-matches the document's `client_id` and requested redirect.
+The default document-size, wall-clock, cache, global in-flight, and per-fetch
+waiter caps remain the mcp-sso `0.3.2` defaults. Captatum's real auth limiter
+admits at most 120 `authorize:` attempts per source per minute and, separately,
+10 `cimd:` resolutions per source per 10 minutes. Both keys are supported
+explicitly and fail closed; a missing/unknown prefix is not silently admitted.
+Resolution failures are direct OAuth failures and never fall through to stored
+DCR under the same URL-shaped `client_id`.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/.well-known/oauth-authorization-server` | AS metadata |
@@ -799,9 +822,12 @@ failure as closed. Disable rejects all later token exchanges immediately.
 Already-issued stateless bearer JWTs are not recalled and remain usable only
 until their original expiry, at most 600 seconds after issuance.
 
-The open DCR route uses a fail-closed per-source fixed-window limiter: at most
-10 registration attempts per 10 minutes, with a bounded 4096-key in-memory map;
-an unavailable or malformed key is rejected. Hosted boot requires a non-empty
+The hosted auth routes use a fail-closed per-source fixed-window limiter with
+separate surface keys: at most 10 `register:` attempts per 10 minutes, 120
+`authorize:` attempts per minute, 10 `cimd:` resolutions per 10 minutes, and
+120 `token:` attempts per minute. The shared in-memory map is bounded to 4096
+keys; an unavailable, malformed, or unknown surface key is rejected. Hosted
+boot requires a non-empty
 `CAPTATUM_TRUSTED_PROXY_CIDRS` IP/CIDR allowlist and a 43-character base64url
 `CAPTATUM_PROXY_AUTH_SECRET` generated from 32 random bytes. Fastify accepts a
 forwarded client address only when both the socket peer is allowlisted and the
@@ -845,7 +871,10 @@ valid `CAPTATUM_PROXY_AUTH_SECRET` +
 validated by mcp-sso's `createBridgeConfig` (EC P-256 key shape, ≥32-char
 consent secret, https origins, valid TTLs, scope subset). Missing, empty, or
 whitespace-only values are rejected; no security selector is converted to an
-optional value. Captatum adds its
+optional value. Captatum's pre-store configuration validation also enables and
+validates the literal `cimd: { enabled: true }` block, so an incompatible
+mcp-sso CIMD contract aborts before the SQLite state directory or files are
+created. Captatum adds its
 AUTH-1 gate that the hosted flavor MUST sit behind Cloudflare Access
 (`CF_ACCESS_ENABLED=true` + `CF_ACCESS_AUDIENCE/CERTS_URL/ISSUER`, the JWKS
 URL https) — so the OAuth subject is always a real verified identity, never a

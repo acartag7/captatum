@@ -11,8 +11,10 @@ interface Bucket {
   resetAt: number;
 }
 
-const POLICIES: Record<"register" | "token", WindowPolicy> = {
+const POLICIES: Record<"register" | "authorize" | "cimd" | "token", WindowPolicy> = {
   register: { limit: 10, windowMs: 10 * 60 * 1000 },
+  authorize: { limit: 120, windowMs: 60 * 1000 },
+  cimd: { limit: 10, windowMs: 10 * 60 * 1000 },
   token: { limit: 120, windowMs: 60 * 1000 },
 };
 const MAX_KEYS = 4096;
@@ -36,8 +38,8 @@ export class InMemoryAuthRateLimit implements RateLimitPort {
       ) return false;
       const separator = key.indexOf(":");
       const prefix = key.slice(0, separator);
-      const policy = prefix === "register" || prefix === "token"
-        ? POLICIES[prefix]
+      const policy = Object.hasOwn(POLICIES, prefix)
+        ? POLICIES[prefix as keyof typeof POLICIES]
         : undefined;
       if (!policy) return false;
       const now = this.clock.nowMs();
