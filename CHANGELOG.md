@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.20.1] — 2026-07-29
+
+Hosted connectors that support Client ID Metadata Documents can authenticate
+without a manually configured OAuth Client ID. This patch restores Claude's
+hosted sign-in path while retaining stored Dynamic Client Registration for
+clients that still use it.
+
+- **fix(auth): enable CIMD discovery.** Hosted RFC 8414 metadata now advertises
+  `client_id_metadata_document_supported: true`, and URL-shaped client IDs are
+  resolved through mcp-sso's guarded, bounded metadata-document path.
+- **fix(auth): admit the complete hosted authorization flow.** Captatum's
+  fail-closed limiter now has separate `authorize:` and `cimd:` budgets in
+  addition to the existing registration and token budgets. Without these
+  allowlisted prefixes, a valid CIMD login was rejected with 429 before the
+  metadata document could be resolved.
+- **compatibility:** the stored DCR registration endpoint, machine-client
+  credentials, 600-second tokens, and stateless JSON `/mcp` contract are
+  unchanged.
+
+Checks: exact-head CI passed syntax, line limits, type checking, the full unit
+suite, integration fixtures, and the process guard. Focused tests exercise both
+stored-DCR fallback and a valid guarded CIMD authorization; both regression
+tests fail with their fixes reverted.
+
 ## [0.20.0] — 2026-07-28
 
 Headless applications can now authenticate to hosted Captatum without an
