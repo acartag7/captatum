@@ -164,7 +164,7 @@ Self-host templates (Railway / EC2 / Mac Mini) share one `docker-compose.yml` + 
 
 ```sh
 node --no-warnings scripts/gen-oauth-keys.ts          # print OAuth signing keys → .env (clone the repo — this helper isn't in the npm package)
-CAPTATUM_TAG=v0.11.0 docker compose -f deploy/docker-compose.yml up -d
+CAPTATUM_TAG=v0.20.1 docker compose -f deploy/docker-compose.yml up -d
 ```
 
 Required env (see `.env.example`): `CAPTATUM_FLAVOR=hosted`, OAuth signing keys (`gen-oauth-keys.ts`), Cloudflare Access (`CF_ACCESS_*`), `MCP_ALLOWED_HOSTS`/`ORIGINS`, the exact reverse-proxy peer allowlist (`CAPTATUM_TRUSTED_PROXY_CIDRS`) plus edge-injected `CAPTATUM_PROXY_AUTH_SECRET`, and `OAUTH_ISSUER`/`RESOURCE`/`REDIRECT_ALLOWLIST`. Hosted metadata advertises CIMD for connectors that support it; stored DCR remains available as fallback and its registrations survive restarts. Inside the deployed gateway container, manage scope-capped credentials with `src/machine-client.ts` (`provision`, `rotate`, `disable`, and `list`)—no pnpm/corepack or network is required. Provision and rotate emit the one-time credential only after the client row and required audit commit atomically. Audits and diagnostics stay on stderr; a failed stdout delivery triggers an exact-version compensating disable, with `list` then `disable` as the supported recovery if compensation fails. Docker images are published to GHCR (`ghcr.io/acartag7/captatum`, `…-browser`) by the release workflow on each tag — pin a tag (e.g. `v0.20.1`); `:latest` tracks the newest release. Full guide + troubleshooting: [`deploy/README.md`](./deploy/README.md).
