@@ -66,7 +66,7 @@ async function validateAt(value: unknown, schema: unknown, path: string, stack: 
     // awaits only when reached (an early failure skips later pattern tests).
     const steps: Array<() => SchemaValidationResult | Promise<SchemaValidationResult>> = [
       () => validateSupported(schema, path),
-      () => validateComposites(value, schema, path, stack, (v, s, p, st) => validateAt(v, s, p, st, pass)),
+      () => validateComposites(value, schema, path, stack, (v, s, p, st) => validateAt(v, s, p, st, pass), pass.results === undefined),
       () => validateEnum(value, schema, path),
       () => validateType(value, schema, path),
       () => validateString(value, schema, path, pass),

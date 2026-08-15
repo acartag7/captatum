@@ -21,17 +21,23 @@ export interface PatternTest {
   value: string;
 }
 
+// ESM-safe on every Node 24.x: an `eval: true` worker's module type follows the
+// ambient package type on some builds (24.15 treats it as ESM, where a top-level
+// `require` throws before any test runs — codex P1), so the source uses a
+// dynamic import inside an async IIFE, which is valid in BOTH module types.
 const WORKER_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads");
-const results = [];
-for (const test of workerData.tests) {
-  try {
-    results.push(new RegExp(test.source).test(test.value));
-  } catch {
-    results.push("failed");
+(async () => {
+  const { parentPort, workerData } = await import("node:worker_threads");
+  const results = [];
+  for (const test of workerData.tests) {
+    try {
+      results.push(new RegExp(test.source).test(test.value));
+    } catch {
+      results.push("failed");
+    }
   }
-}
-parentPort.postMessage(results);
+  parentPort.postMessage(results);
+})();
 `;
 
 export type BatchedResult =

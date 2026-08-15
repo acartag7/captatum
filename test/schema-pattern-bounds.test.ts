@@ -129,3 +129,26 @@ test("dotted property names do not collide with nested paths (codex P2 r3)", asy
   // Clean value still passes.
   assert.equal((await validateJsonSchema({ "a.b": "ok", a: { b: "ok" } }, schema)).valid, true);
 });
+
+test("collection is independent of composite outcomes (codex P2 r4)", async () => {
+  // {not:{pattern:"^a$"},pattern:"^b$"} on "b": provisional collection used to
+  // treat the inner pattern as matching, FAIL the not, and stop before the
+  // outer pattern — the check pass then hit an uncollected id and rejected a
+  // VALID value as unverified. Collection must descend past every provisional
+  // composite outcome.
+  assert.equal(
+    (await validateJsonSchema("b", { not: { type: "string", pattern: "^a$" }, type: "string", pattern: "^b$" })).valid,
+    true,
+  );
+  // and the symmetric violating case still fails
+  assert.equal(
+    (await validateJsonSchema("a", { not: { type: "string", pattern: "^a$" }, type: "string", pattern: "^b$" })).valid,
+    false,
+  );
+  // oneOf provisional double-count must not orphan a later sibling pattern either
+  assert.equal(
+    (await validateJsonSchema("x", { oneOf: [{ type: "string", pattern: "^x$" }, { type: "string", pattern: "^x$" }] })).valid,
+    false,
+    "exactly-one violated",
+  );
+});
