@@ -69,3 +69,15 @@ test("heuristic-bypass bomb: accepted at input, bounded at execution (V2 regress
   assert.match(result.message ?? "", /time budget/);
   assert.ok(elapsed < 3_000, `bounded execution took ${elapsed}ms — the wall-clock budget did not bind`);
 });
+
+test("a many-element pattern validation costs ONE bounded batch, not N spawns (codex P1)", async () => {
+  // 100 items x a safe pattern: with per-element worker spawns + a fresh 500ms
+  // budget each, this took ~5.7s. Batched: one spawn, one shared budget.
+  const values = Array.from({ length: 100 }, (_, i) => `item${i}`);
+  const schema = { type: "array", items: { type: "string", pattern: "^[a-z0-9]+$" } };
+  const started = Date.now();
+  const result = await validateJsonSchema(values, schema);
+  const elapsed = Date.now() - started;
+  assert.equal(result.valid, true, JSON.stringify(result));
+  assert.ok(elapsed < 1_500, `batched validation took ${elapsed}ms — per-element spawns are back`);
+});

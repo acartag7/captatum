@@ -1,6 +1,6 @@
 import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, stringArray, stripJsonFence, unsupported, toRegExp, type SchemaValidationResult } from "./json-schema-utils.ts";
 import { validateComposites } from "./json-schema-composites.ts";
-import { testPatternBounded } from "./bounded-pattern.ts";
+import { testPatternsBatched, type PatternTest } from "./bounded-pattern.ts";
 import { SUPPORTED_SCHEMA_KEYS, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
 
 export type { SchemaValidationResult } from "./json-schema-utils.ts";
@@ -12,14 +12,37 @@ export function parseJsonResult(text: string): unknown {
   return JSON.parse(trimmed) as unknown;
 }
 
+/** Deferred pattern tests for one validation pass (see validateString): recorded
+ *  during the traversal, executed together in ONE bounded worker round-trip at
+ *  the end — a per-element spawn would give a 100-element result 100 × the
+ *  500 ms budget (codex P1). Entries carry their path + pattern text so the
+ *  failure messages match the old inline messages. */
+interface PatternPass {
+  tests: Array<PatternTest & { path: string; pattern: string }>;
+}
+
 export async function validateJsonSchema(value: unknown, schema: unknown): Promise<SchemaValidationResult> {
   if (schema === undefined || schema === true) return ok();
   if (schema === false) return invalid("$ is not allowed by false schema");
   if (!isRecord(schema)) return invalid("schema must be an object or boolean");
-  return await validateAt(value, schema, "$", new Set());
+  const pass: PatternPass = { tests: [] };
+  const structural = await validateAt(value, schema, "$", new Set(), pass);
+  if (!structural.valid) return structural;
+  if (pass.tests.length === 0) return ok();
+  const batched = await testPatternsBatched(pass.tests);
+  if (!batched.ok) {
+    return invalid("schema pattern(s) could not be verified within the pattern time budget; pattern not verified");
+  }
+  for (let index = 0; index < pass.tests.length; index += 1) {
+    const test = pass.tests[index];
+    if (batched.matched[index] !== true) {
+      return invalid(`${test.path} must match pattern ${test.pattern}`);
+    }
+  }
+  return ok();
 }
 
-async function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Record<string, unknown>>): Promise<SchemaValidationResult> {
+async function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Record<string, unknown>>, pass: PatternPass): Promise<SchemaValidationResult> {
   if (schema === true) return ok();
   if (schema === false) return invalid(`${path} is not allowed by false schema`);
   if (!isRecord(schema)) return invalid(`${path} schema must be an object or boolean`);
@@ -30,13 +53,13 @@ async function validateAt(value: unknown, schema: unknown, path: string, stack: 
     // awaits only when reached (an early failure skips later pattern tests).
     const steps: Array<() => SchemaValidationResult | Promise<SchemaValidationResult>> = [
       () => validateSupported(schema, path),
-      () => validateComposites(value, schema, path, stack, validateAt),
+      () => validateComposites(value, schema, path, stack, (v, s, p, st) => validateAt(v, s, p, st, pass)),
       () => validateEnum(value, schema, path),
       () => validateType(value, schema, path),
-      () => validateString(value, schema, path),
+      () => validateString(value, schema, path, pass),
       () => validateNumber(value, schema, path),
-      () => validateObject(value, schema, path, stack),
-      () => validateArray(value, schema, path, stack),
+      () => validateObject(value, schema, path, stack, pass),
+      () => validateArray(value, schema, path, stack, pass),
     ];
     for (const step of steps) {
       const result = await step();
@@ -73,7 +96,7 @@ function validateType(value: unknown, schema: Record<string, unknown>, path: str
     : invalid(`${path} must be ${types.join(" or ")}`);
 }
 
-async function validateString(value: unknown, schema: Record<string, unknown>, path: string): Promise<SchemaValidationResult> {
+async function validateString(value: unknown, schema: Record<string, unknown>, path: string, pass: PatternPass): Promise<SchemaValidationResult> {
   for (const key of ["minLength", "maxLength"] as const) {
     const result = nonNegativeInteger(schema, key, path);
     if (!result.valid) return result;
@@ -98,15 +121,12 @@ async function validateString(value: unknown, schema: Record<string, unknown>, p
     // caller knows the pattern could not be fully checked (non-fatal advisory).
     const MAX_PATTERN_VALUE_LENGTH = 8192;
     if (value.length > MAX_PATTERN_VALUE_LENGTH) return invalid(`${path} exceeds the 8 KiB pattern-validation cap; pattern not verified`);
-    // Execute on a worker under a wall-clock budget: the input-boundary heuristic
-    // is approximate, and a semantically-overlapping alternation that passes it
-    // can still backtrack exponentially (a synchronous test = event-loop stall).
-    // Timeout/worker failure is FAIL-CLOSED: the pattern could not be verified.
-    const bounded = await testPatternBounded(pattern.value, value);
-    if (!bounded.ok) {
-      return invalid(`${path} could not be verified within the pattern time budget; pattern not verified`);
-    }
-    if (!bounded.matched) return invalid(`${path} must match pattern ${schema.pattern}`);
+    // DEFERRED, not executed inline: pattern matching runs on a worker under a
+    // wall-clock budget (the input-boundary heuristic is approximate; a passing
+    // pattern can still backtrack exponentially, and a synchronous test = an
+    // event-loop stall). All tests of one validation pass share a single batched
+    // worker + budget — recorded here, executed by validateJsonSchema.
+    pass.tests.push({ source: pattern.value.source, value, path, pattern: schema.pattern });
   }
   return ok();
 }
@@ -144,7 +164,7 @@ function validateNumber(value: unknown, schema: Record<string, unknown>, path: s
   return ok();
 }
 
-async function validateObject(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>): Promise<SchemaValidationResult> {
+async function validateObject(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>, pass: PatternPass): Promise<SchemaValidationResult> {
   if (schema.type !== "object" && !isRecord(value)) return ok();
   if (!isRecord(value)) return invalid(`${path} must be object`);
   for (const key of ["minProperties", "maxProperties"] as const) {
@@ -170,11 +190,11 @@ async function validateObject(value: unknown, schema: Record<string, unknown>, p
   if (!properties.valid) return properties;
   for (const [key, propertySchema] of Object.entries(properties.value)) {
     if (Object.hasOwn(value, key)) {
-      const result = await validateAt(value[key], propertySchema, `${path}.${key}`, stack);
+      const result = await validateAt(value[key], propertySchema, `${path}.${key}`, stack, pass);
       if (!result.valid) return result;
     }
   }
-  return await validateAdditionalProperties(value, schema, properties.value, path, stack);
+  return await validateAdditionalProperties(value, schema, properties.value, path, stack, pass);
 }
 
 async function validateAdditionalProperties(
@@ -183,6 +203,7 @@ async function validateAdditionalProperties(
   properties: Record<string, unknown>,
   path: string,
   stack: Set<Record<string, unknown>>,
+  pass: PatternPass,
 ): Promise<SchemaValidationResult> {
   const additional = schema.additionalProperties;
   if (additional !== undefined && typeof additional !== "boolean" && !isRecord(additional)) {
@@ -194,14 +215,14 @@ async function validateAdditionalProperties(
   for (const key of Object.keys(value).filter((candidate) => !Object.hasOwn(properties, candidate))) {
     if (additional === false) return invalid(`${path}.${key} is not allowed`);
     if (additional !== undefined && additional !== true) {
-      const result = await validateAt(value[key], additional, `${path}.${key}`, stack);
+      const result = await validateAt(value[key], additional, `${path}.${key}`, stack, pass);
       if (!result.valid) return result;
     }
   }
   return ok();
 }
 
-async function validateArray(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>): Promise<SchemaValidationResult> {
+async function validateArray(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>, pass: PatternPass): Promise<SchemaValidationResult> {
   if (schema.type !== "array" && !Array.isArray(value)) return ok();
   if (!Array.isArray(value)) return invalid(`${path} must be array`);
   for (const key of ["minItems", "maxItems"] as const) {
@@ -221,7 +242,7 @@ async function validateArray(value: unknown, schema: Record<string, unknown>, pa
   if (!("items" in schema)) return ok();
   if (Array.isArray(schema.items)) return invalid(`${path} schema items tuple arrays are not supported`);
   for (let index = 0; index < value.length; index += 1) {
-    const result = await validateAt(value[index], schema.items, `${path}[${index}]`, stack);
+    const result = await validateAt(value[index], schema.items, `${path}[${index}]`, stack, pass);
     if (!result.valid) return result;
   }
   return ok();
