@@ -61,18 +61,22 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
 
 /** Relative credential URLs — the absolute-literal scanner's blind spot (executed
  *  2026-08-15): `/cb#access_token=…` and `/download?sig=…` egressed to a hosted LLM
- *  where the absolute spelling was flagged. A relative literal has no host, so only the
- *  QUERY/FRAGMENT credential keys apply (no userinfo/loopback/internal-host checks — those
- *  need a host). Path part bounded and optional so a bare `?access_token=…` / `#sig=…`
- *  fragment literal in prose or code still matches. Prefixed by a delimiter so ordinary
- *  prose mid-word sequences are not absorbed. Linear char classes, bounded lengths. */
-const RELATIVE_CREDENTIAL_URL_IN_CONTENT = /(?:^|[\s"'(<[=;])(\/\/[^\s"'<>]{1,512}|(?:[^\s"'<>?#]{0,2048})?[?#][^\s"'<>]{0,512})/g;
-/** Cap the embedded-URL scan to the head of the content. The high-confidence
- *  credential/header patterns below scan the FULL content regardless of size;
- *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
- *  never flagged solely for exceeding this cap — the residual risk is an
- *  embedded cloud-presigned URL past the cap egressing to a hosted LLM, which is
- *  accepted (see docs/threat-model.md). */
+ *  where the absolute spelling was flagged. TWO anchor scans, neither consuming a
+ *  PATH (path caps previously dropped credentials after long generated paths —
+ *  codex P1 r5 — and any cap is a bypass waiting for a longer URL):
+ *  (1) KEY-ANCHORED: a `?`/`#`/`&` followed by key=shape — the credential key set
+ *      decides, wherever the reference starts, however long its path was. Keys are
+ *      bounded ({1,64}: no credential key is longer) and values match a prefix
+ *      (length beyond the bound is irrelevant — the KEY is the signal). HTML-escaped
+ *      separators are normalized first, as the absolute scanner does.
+ *  (2) NETWORK-PATH: an `//authority` reference CARRIES a host, so the host checks
+ *      apply (userinfo credential, internal host, loopback) via a dummy scheme.
+ * Both are linear, single-pass, bounded by the 500 KB head. The #44 ad-noise
+ *  carve-out is preserved: only the credential key set flags, never generic
+ *  token/key/auth/expires. */
+const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=([^\s"'<>=&#]{1,512})/g;
+const RELATIVE_NETWORK_PATH = /\/\/([^\s"'<>/?#]{1,2048})/g;
+
 const MAX_CONTENT_SCAN = 500_000;
 
 export interface SensitivitySignal {
@@ -148,35 +152,21 @@ export function detectSensitiveTransformInput(input: {
       ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
-  // Relative-URL credential literals (executed gap 2026-08-15): the same credential
-  // keys, relative spelling — `/cb#access_token=…` egressed to a hosted LLM where the
-  // absolute spelling was flagged. A relative literal has no host, so only the
-  // QUERY/FRAGMENT credential-key checks apply. The #44 ad-noise carve-out is
-  // preserved: only CONTENT_CREDENTIAL_QUERY_KEYS flags (sig/signature/access_token/
-  // api_key/presigned keys), NOT generic token/key/auth/expires, so ordinary
-  // relative ad/tracker links in public pages stay unflagged.
-  for (const match of head.matchAll(RELATIVE_CREDENTIAL_URL_IN_CONTENT)) {
-    // Group 1 = the relative reference WITHOUT its leading delimiter — the ^-
-    // anchored form captures no delimiter, so slicing match[0] would eat the
-    // initial ? or # and defeat both key checks (codex P1 r2).
-    const literal = (match[1] ?? "").replace(/[.,;:!?]+$/, "");
-    if (literal.startsWith("//")) {
-      // RFC 3986 network-path reference: it CARRIES an authority, so the full
-      // absolute-URL check chain applies (userinfo credential, internal host,
-      // query/fragment keys) — parse it with a dummy scheme. Without this,
-      // //user:pass@host or //169.254.169.254/... egressed where the https://
-      // spelling was flagged (codex P1 r3).
-      const url = `https:${literal}`;
-      const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
-        ?? fragmentCredentialReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
-        ?? userinfoCredentialReason(url)
-        ?? loopbackOAuthCredentialReason(url)
-        ?? internalHostReason(url, true);
-      if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
-      continue;
+  // (1) credential KEY anywhere a relative reference can carry one — anchored
+  // on the ?/#/& separator, so the path before it (of ANY length) is irrelevant.
+  const normalizedHead = head.replace(/&(amp|#38|#x26);/gi, "&");
+  for (const match of normalizedHead.matchAll(RELATIVE_CREDENTIAL_KEY)) {
+    const key = match[1]?.toLowerCase() ?? "";
+    if (CONTENT_CREDENTIAL_QUERY_KEYS.has(key)) {
+      return { sensitive: true, reason: "content_embedded_signed_or_tokenized_url" };
     }
-    const reason = signedUrlReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS)
-      ?? fragmentCredentialReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS);
+  }
+  // (2) network-path references: a host is present, so host-class checks apply.
+  for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
+    const url = `https://${match[1]}`;
+    const reason = userinfoCredentialReason(url)
+      ?? loopbackOAuthCredentialReason(url)
+      ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };

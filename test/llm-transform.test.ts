@@ -822,6 +822,15 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//cdn.example/f?sig=abcdEFGH1234567890",
     // a credential after a >256-char relative path (codex P1 r3)
     `/${"x".repeat(300)}?access_token=OPAQUE4`,
+    // and after a >2 048-char path — no per-reference cap may exist (codex P1 r5)
+    `/${"x".repeat(2050)}?access_token=OPAQUE5`,
+    // a >512-char VALUE still flags (the KEY is the signal; the value matches a prefix)
+    `?access_token=${"x".repeat(600)}`,
+    // multi-parameter strings: each key gets its own match (values must not
+    // swallow a later credential pair), base64 padding and all
+    "?a=1&b=2&api_key=XYZ",
+    "?sig=abc123==",
+    "page?a=1&amp;access_token=OPAQUE6",
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
     assert.equal(r.sensitive, true, content);
