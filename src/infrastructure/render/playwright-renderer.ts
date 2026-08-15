@@ -75,6 +75,11 @@ export class PlaywrightRenderer implements RenderPort {
   async render(input: RenderInput): Promise<RenderOutput> {
     const actions: RenderAction[] = [serviceWorkerAction()];
     const state = new RenderRouteState(input, actions, this.guard);
+    // ONE deadline for the whole render (codex P1 r2): established before CDP
+    // resolution so DNS/connect, navigation, and settling share the single
+    // per-tier timeoutMs budget instead of each phase getting a fresh full one.
+    const startedAt = Date.now();
+    const remaining = (): number => Math.max(0, input.timeoutMs - (Date.now() - startedAt));
     let browser: PlaywrightBrowser | undefined;
     let context: PlaywrightContext | undefined;
     let page: PlaywrightPage | undefined;
@@ -92,15 +97,25 @@ export class PlaywrightRenderer implements RenderPort {
           // abort signal (the bulk wall) — a stalled DNS lookup must not hold a render
           // slot past either (codex P1).
           const endpoint = this.cdpEndpoint; // narrowed for the closure below
+          if (input.signal?.aborted) throw new Error("render_timeout");
           const connect = (async () => playwright.chromium.connectOverCDP(
             await resolveCdpConnectUrl(endpoint, this.cdpResolver),
           ))();
-          this.cdpBrowser = await withTimeout(
-            input.signal
-              ? Promise.race([connect, abortRejection(input.signal)])
-              : connect,
-            input.timeoutMs,
-          );
+          let connected = false;
+          try {
+            this.cdpBrowser = await withTimeout(
+              input.signal
+                ? Promise.race([connect, abortRejection(input.signal)])
+                : connect,
+              remaining(),
+            );
+            connected = true;
+          } finally {
+            // Lost the race (deadline/abort): a late-arriving browser must not
+            // leak a live CDP WebSocket against the relay's 32-connection cap
+            // (codex P2 r2) — close it when it lands and swallow the rejection.
+            if (!connected) void connect.then((b) => b.close().catch(() => {})).catch(() => {});
+          }
         }
         browser = this.cdpBrowser;
       } else {
@@ -126,11 +141,9 @@ export class PlaywrightRenderer implements RenderPort {
       state.setMainFrame(page.mainFrame());
       await installPageControls(page, actions, input.timeoutMs);
       await page.route("**/*", (route) => state.handle(route));
-      const startedAt = Date.now();
-      const remaining = (): number => Math.max(0, input.timeoutMs - (Date.now() - startedAt));
       const response = await withTimeout(
-        page.goto(input.url, { waitUntil: "domcontentloaded", timeout: input.timeoutMs }),
-        input.timeoutMs,
+        page.goto(input.url, { waitUntil: "domcontentloaded", timeout: remaining() }),
+        remaining(),
       );
       // Idle-aware settle: networkidle then a content-stability dwell. The networkidle cap RESERVES
       // settleMinDwellMs for the content-stability phase; a 0 cap SKIPS the wait (timeout:0 = no-timeout hang).

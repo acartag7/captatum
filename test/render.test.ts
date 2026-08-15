@@ -490,6 +490,27 @@ test("an already-aborted bulk wall rejects the CDP connect before any browser wo
   assert.equal(result.code, "timeout");
 });
 
+test("a CDP connect that loses the deadline race closes its late-arriving browser (codex P2 r2)", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: harness.load,
+    guard: new FakeGuard({}),
+    cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    // DNS is slow: resolution lands AFTER the render deadline loses the race.
+    cdpResolver: async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      return "10.43.38.129";
+    },
+  });
+  const input = renderInput(new FakeFetcher());
+  const result = await renderer.render({ ...input, timeoutMs: 100 });
+  assert.equal(result.rendered, false);
+  assert.equal(result.code, "timeout");
+  // the late browser must be closed, not leaked against the relay connection cap
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(harness.browserClosed, true, "late connect result must be closed");
+});
+
 test("renderer returns timeout and closes the browser on stalled navigation", async () => {
   const harness = new BrowserHarness({ neverResolve: true });
   const result = await new PlaywrightRenderer({ loadPlaywright: harness.load })
