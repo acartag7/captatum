@@ -44,7 +44,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - name: Verify Chromium launches (no silent skip)
         run: node --input-type=module -e "const {chromium}=await import('playwright'); const b=await chromium.launch(); await b.close();"
-      - run: node --no-warnings --test test/integration/fixtures.test.ts
+      - run: node --no-warnings --test test/integration/fixtures.test.ts test/integration/popup-egress.test.ts
 
   # Engineering OS artifact-chain guard (freeze-hash · mixed-diff · stage-artifact).
   # https://github.com/acartag7/engineering-os — pinned by commit SHA like every other

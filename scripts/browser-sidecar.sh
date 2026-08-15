@@ -55,4 +55,5 @@ exec "${CHROME}" \
   --disable-dev-shm-usage \
   --disable-background-networking \
   --no-remote \
+  --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
   about:blank

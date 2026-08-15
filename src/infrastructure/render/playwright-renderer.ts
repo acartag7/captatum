@@ -123,6 +123,13 @@ export class PlaywrightRenderer implements RenderPort {
           headless: true,
           chromiumSandbox: this.chromiumSandbox,
           env: {},
+          // Transport-layer egress page.route cannot see: WebRTC ICE/STUN sends
+          // UDP from the browser's network position regardless of request
+          // interception. Forbid non-proxied UDP so ICE cannot probe or
+          // exfiltrate below the fetch guard (the hosted browser pod's netns
+          // firewall already blocks this; the local in-process flavor has no
+          // such firewall, so the flag is load-bearing there).
+          args: ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
         });
         ownsBrowser = true;
       }
@@ -139,8 +146,15 @@ export class PlaywrightRenderer implements RenderPort {
         else input.signal.addEventListener("abort", onSignalAbort, { once: true });
       }
       state.setMainFrame(page.mainFrame());
-      await installPageControls(page, actions, input.timeoutMs);
-      await page.route("**/*", (route) => state.handle(route));
+      await installPageControls(context, page, actions, input.timeoutMs);
+      // POPUP-EGRESS FIX: route at the CONTEXT level. page.route covers only the
+      // page and its frames — a window.open / target=_blank popup is a NEW target
+      // whose requests egress browser-direct, bypassing the guarded FetcherPort
+      // entirely (executed PoC: 5 uninstrumented connections incl. loopback
+      // navigations). Context routing intercepts every page in the context, so
+      // anything a popup fires before it is closed still resolves through the
+      // same guarded fulfillment as any subresource.
+      await context.route("**/*", (route) => state.handle(route));
       const response = await withTimeout(
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: remaining() }),
         remaining(),
@@ -185,6 +199,7 @@ export class PlaywrightRenderer implements RenderPort {
 }
 
 async function installPageControls(
+  context: PlaywrightContext,
   page: PlaywrightPage,
   actions: RenderAction[],
   timeoutMs: number,
@@ -192,11 +207,20 @@ async function installPageControls(
   page.setDefaultTimeout?.(timeoutMs);
   page.setDefaultNavigationTimeout?.(timeoutMs);
   page.on("download", (value) => blockDownload(value, actions));
-  if (page.routeWebSocket) {
-    await page.routeWebSocket("**/*", (socket) => closeWebSocket(socket, actions));
+  // A fetch-render has no use for popups: close them on sight. Context-level
+  // routing (installed by render()) guards anything they fire before the close
+  // lands, so neither layer depends on the other's timing.
+  page.on("popup", (popup) => closePopup(popup, actions));
+  if (context.routeWebSocket) {
+    await context.routeWebSocket("**/*", (socket) => closeWebSocket(socket, actions));
   } else {
     page.on("websocket", (value) => closeLegacyWebSocket(value, actions));
   }
+}
+
+function closePopup(popup: PlaywrightPage, actions: RenderAction[]): void {
+  actions.push({ type: "popup-closed", reason: "popups disabled", url: safeRenderUrl(popup.url()) });
+  void popup.close().catch(() => {});
 }
 
 function blockDownload(value: PlaywrightEventValue, actions: RenderAction[]): void {

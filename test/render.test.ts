@@ -511,6 +511,23 @@ test("a CDP connect that loses the deadline race closes its late-arriving browse
   assert.equal(harness.browserClosed, true, "late connect result must be closed");
 });
 
+test("renderer closes popups and intercepts at the context level (popup-egress fix)", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) });
+  const result = await renderer.render(renderInput(new FakeFetcher()));
+
+  // Interception must be CONTEXT-level: page.route covers only the page + its
+  // frames, leaving window.open popups to egress browser-direct (executed PoC).
+  assert.equal(result.rendered, true);
+  assert.equal(harness.contextRouteInstalled, true, "route must be installed on the context");
+
+  // A popup closes on sight; anything it fired first was context-routed (guarded).
+  let closed = false;
+  assert.ok(harness.popupHandler, "popup handler must be installed");
+  await harness.popupHandler({ url: () => "http://popup.test/x", close: async () => { closed = true; } });
+  assert.equal(closed, true);
+});
+
 test("renderer returns timeout and closes the browser on stalled navigation", async () => {
   const harness = new BrowserHarness({ neverResolve: true });
   const result = await new PlaywrightRenderer({ loadPlaywright: harness.load })
@@ -561,6 +578,8 @@ class BrowserHarness {
   browserClosed = false;
   downloadCanceled = false;
   websocketClosed = false;
+  contextRouteInstalled = false;
+  popupHandler?: (page: { url(): string; close(): Promise<void> }) => void;
   // Stable frame sentinels so request.frame() === mainFrame distinguishes the
   // top-level document from an iframe navigation (matches page.mainFrame()).
   readonly mainFrame = {};
@@ -602,7 +621,24 @@ class BrowserHarness {
     return {
       newContext: async (options: Record<string, unknown>) => {
         this.contextOptions = options;
-        return { newPage: async () => this.page(), close: async () => {} };
+        // Route capture lives on the CONTEXT (the renderer installs context-level
+        // interception so popups are covered). page() deliberately exposes NO
+        // route/routeWebSocket — if the renderer regresses to page-level routing,
+        // goto finds no handler and these tests fail loudly.
+        return {
+          newPage: async () => this.page(),
+          close: async () => {},
+          route: async (_pattern: string, handler: (route: FakeRoute) => Promise<void> | void) => {
+            this.routeHandler = handler;
+            this.contextRouteInstalled = true;
+          },
+          routeWebSocket: async (
+            _pattern: string,
+            handler: (socket: FakeWebSocket) => Promise<void> | void,
+          ) => {
+            this.websocketHandler = handler;
+          },
+        };
       },
       close: async () => {
         this.browserClosed = true;
@@ -618,17 +654,9 @@ class BrowserHarness {
       ? { content: async () => this.options.extraFrameContent as string }
       : undefined;
     return {
-      route: async (_pattern: string, handler: (route: FakeRoute) => Promise<void> | void) => {
-        this.routeHandler = handler;
-      },
-      routeWebSocket: async (
-        _pattern: string,
-        handler: (socket: FakeWebSocket) => Promise<void> | void,
-      ) => {
-        this.websocketHandler = handler;
-      },
-      on: (event: "download", handler: (download: FakeDownload) => void) => {
-        if (event === "download") this.downloadHandler = handler;
+      on: (event: "download" | "popup", handler: (value: unknown) => void) => {
+        if (event === "download") this.downloadHandler = handler as (d: FakeDownload) => void;
+        if (event === "popup") this.popupHandler = handler as (p: { url(): string; close(): Promise<void> }) => void;
       },
       setDefaultTimeout: (_timeoutMs: number) => {},
       setDefaultNavigationTimeout: (_timeoutMs: number) => {},

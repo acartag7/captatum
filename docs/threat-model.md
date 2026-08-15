@@ -134,12 +134,28 @@ the contract reference; this file is the security reasoning.
     original host) so DNS cannot rebind post-check.
   - manual redirects re-validated each hop, `maxHops=5`.
   - decompressed-byte cap; `AbortController` timeout.
-- Tier-3 in-browser SSRF: `page.route` intercepts every browser request before
-  the browser can egress, and **every non-aborted GET — and a first-party POST
+- Tier-3 in-browser SSRF: interception is installed at the **context** level
+  (`context.route("**/*")` — playwright-renderer.ts), which covers every page in
+  the render context **including popups**, and **every non-aborted GET — and a
+  first-party POST
   (same registrable domain, fetch/XHR only — #111) — is fulfilled through
   `FetcherPort`** (`route.fulfill`, never `route.continue`) — the browser never
   resolves or connects on its own, so DNS-rebinding and the redirect TOCTOU are
   structurally impossible and every redirect hop is re-validated (`maxHops`).
+  **Popups are closed on sight** (`page.on("popup")` → close + a `popup-closed`
+  action): page-level routing alone covers only the page and its frames, and a
+  `window.open`/`target=_blank` target would otherwise egress browser-direct,
+  bypassing the guarded fetcher entirely (executed PoC 2026-08-15: five
+  uninstrumented connections incl. a loopback navigation from a non-loopback
+  opener; regression: `test/integration/popup-egress.test.ts`). Context routing
+  guards anything a popup fires before the close lands, so neither layer depends
+  on the other's timing. **WebRTC**: both flavors launch Chromium with
+  `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` — ICE/STUN is
+  transport-layer UDP below request interception, so without the flag a rendered
+  page could probe/exfiltrate over UDP (executed PoC: STUN datagrams to a
+  loopback listener); the hosted browser pod's netns firewall blocks this too,
+  but the local in-process flavor has no such firewall, making the flag
+  load-bearing there.
   Image/font/media URLs and known ad/tracker hosts (`src/domain/adblock.ts`,
   a curated OSS-derived apex list) are checked with the same P1 URL/DNS
   private-IP guard and then aborted — the ad script/pixel never loads, so it can

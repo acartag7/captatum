@@ -13,6 +13,10 @@ export interface PlaywrightBrowser {
 export interface PlaywrightContext {
   newPage(): Promise<PlaywrightPage>;
   close(): Promise<void>;
+  /** Context-level interception covers EVERY page in the context — including
+   *  popups, which page-level routing does not (the popup-egress fix). */
+  route(pattern: string, handler: RouteHandler): Promise<void>;
+  routeWebSocket?(pattern: string, handler: WebSocketHandler): Promise<void>;
 }
 
 export interface PlaywrightFrame {
@@ -23,6 +27,8 @@ export interface PlaywrightPage {
   route(pattern: string, handler: RouteHandler): Promise<void>;
   routeWebSocket?(pattern: string, handler: WebSocketHandler): Promise<void>;
   on(event: "download" | "websocket", handler: (value: PlaywrightEventValue) => void): void;
+  /** Fired when the page opens a popup/new target — page.route does NOT cover it. */
+  on(event: "popup", handler: (page: PlaywrightPage) => void): void;
   setDefaultTimeout?(timeoutMs: number): void;
   setDefaultNavigationTimeout?(timeoutMs: number): void;
   goto(url: string, options: Record<string, unknown>): Promise<PlaywrightResponse | null>;
