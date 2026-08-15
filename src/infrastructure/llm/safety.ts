@@ -160,7 +160,7 @@ export function detectSensitiveTransformInput(input: {
       if (atSign > 0 && authority.slice(0, atSign).includes(":")) {
         return { sensitive: true, reason: "content_embedded_userinfo_credential" };
       }
-      const reason = conclusiveEvidence(authority.slice(atSign + 1).replace(/:.*/, ""));
+      const reason = conclusiveEvidence(authority.slice(atSign + 1));
       if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
       continue;
     }
@@ -181,36 +181,27 @@ export function detectSensitiveTransformInput(input: {
   return { sensitive: false };
 }
 
-/** Evidence CONCLUSIVE in a SLICED host (completion past the cap unknown; a
- *  URL parse of the prefix is a phantom — shorthand reinterprets "169.254." as
- *  the public 169.0.0.254 — so never classify phantoms). Letter hosts and
- *  complete numeric hosts classify normally; numeric PARTIALS only when EVERY
- *  completion is private (first octet 0/10/>=224; 192.168./169.254./100.64-127./
- *  172.16-31. two-octet forms); unclosed [fd/[fc (ULA) and [fe8-feb
- *  (link-local) brackets. Ambiguous (172., 100., partial octets) and loopback
- *  (#127 content exemption) defer. */
-function conclusiveEvidence(host: string): string | undefined {
-  if (host.startsWith("[")) {
-    if (!host.includes("]") && (/^\[f[cd]/i.test(host) || /^\[fe[89ab]/i.test(host))) {
-      return "internal_host";
+/** Evidence CONCLUSIVE in a SLICED host. A host is TERMINATED (its text cannot
+ *  extend past the cap) only by a closed ] (bracketed) or a : port separator —
+ *  otherwise ANY classification is a phantom guess (//10 completes to the
+ *  public 100.0.0.1; //service.internal to service.internal.com) and defers.
+ *  Terminated hosts classify via the ordinary helpers. The ONE unterminated
+ *  form that stays conclusive is an unclosed v6 bracket whose hex prefix
+ *  cannot escape its block: [fd/[fc (ULA — fd00::/8), [fe8-feb (link-local).
+ *  Loopback is the #127 content exemption; ambiguous forms defer. */
+function conclusiveEvidence(raw: string): string | undefined {
+  if (raw.startsWith("[")) {
+    if (raw.includes("]")) {
+      const stripped = raw.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
+      return internalHostReason(`https://${stripped}`, true) ?? undefined;
     }
-    return internalHostReason(`https://${host}`, true) ?? undefined;
+    if (/^\[f[cd]/i.test(raw) || /^\[fe[89ab]/i.test(raw)) return "internal_host";
+    return undefined;
   }
-  if (/[a-z]/i.test(host)) return internalHostReason(`https://${host}`, true) ?? undefined;
-  const parts = host.split(".");
-  const first = Number(parts[0]);
-  const complete = parts.length === 4 && parts.every((p) => /^\d+$/.test(p));
-  if (complete) return internalHostReason(`https://${host}`, true) ?? undefined;
-  if (Number.isInteger(first) && (first === 0 || first === 10 || first >= 224)) {
-    return "internal_host";
-  }
-  const second = Number(parts[1]);
-  if (!Number.isInteger(second)) return undefined;
-  if (first === 192 && second === 168) return "internal_host";
-  if (first === 169 && second === 254) return "internal_host";
-  if (first === 100 && second >= 64 && second <= 127) return "internal_host";
-  if (first === 172 && second >= 16 && second <= 31) return "internal_host";
-  return undefined;
+  const colon = raw.indexOf(":");
+  if (colon === -1) return undefined; // unterminated — the host text may extend
+  const host = raw.slice(0, colon);
+  return internalHostReason(`https://${host}`, true) ?? undefined;
 }
 
 /** Redact signed/tokenized param values from a URL before display (INFOLEAK-1). HOST-AGNOSTIC
