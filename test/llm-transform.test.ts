@@ -827,6 +827,17 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     // shape in docs/logs and was unreachable (codex P1)
     "run `//169.254.169.254/latest/meta-data` now",
     "leaked `//alice:password@example.com/x` in logs",
+    // SIBLING SWEEP: every legitimate left-adjacent context, as a class —
+    // pipes was the fifth consecutive one-character boundary finding
+    "|//169.254.169.254/latest/meta-data|", // Markdown table cell
+    "|//alice:password@example.com/x|",
+    "endpoint: //10.0.0.5/api", // YAML/config value
+    "creds,//10.0.0.5/x", // comma
+    "{//10.0.0.5/seed}", // brace
+    "**//10.0.0.5/admin**", // bold emphasis
+    "_//10.0.0.5/admin_", // underscore emphasis
+    ">//169.254.169.254/meta", // blockquote
+    "see!//10.0.0.5/x",
     "see (//169.254.169.254) for creds",
     "cfg //10.0.0.5:80, next",
     "//cdn.example/f?sig=abcdEFGH1234567890",
@@ -860,6 +871,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
     "docs //example.com, chapter 2", // punctuation on a public host stays clean too
     "see `//example.com/api` docs", // ... backtick-wrapped public host too
+    "|//example.com/api|", // ... table-cell public host
     // ... and only at a reference BOUNDARY: Python floor division (value//10) and
     // a // inside an absolute URL's path are NOT authorities (Node parses bare
     // numbers as IPv4 — public pages silently degraded to raw) (codex P1)
