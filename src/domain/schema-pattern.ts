@@ -41,11 +41,22 @@ export function toRegExp(pattern: string, path: string): PatternCompileResult {
  *  enough). Returns true (unsafe) on either construct.
  */
 function isLikelyCatastrophicPattern(pattern: string): boolean {
-  const isQuantifier = (ch: string | undefined): boolean =>
-    ch === "*" || ch === "+" || ch === "?" || ch === "{";
   // Per open group: q = contains a quantifier (incl. a quantified child); u = contains
   // overlapping alternation or an unsafe child. Danger propagates to enclosing groups so
   // wrapper patterns like ((a|a))+ and ((a+))+ are caught at the outer quantifier.
+  /** Whether a quantifier STARTING at src[idx] is VARIABLE-width (+, *, ?, {n,},
+   *  {n,m} with n<m). A FIXED {n} repeats an exact count: every iteration has the
+   *  same width, so there is no split ambiguity and no nested-quantifier blowup
+   *  (^([A-Z]{2})+$ and ^([0-9]{4}-)+$ are linear — codex P2 r8). A { that does
+   *  not form a valid bound is a LITERAL in JS, not a quantifier at all. */
+  const variableQuantifierAt = (src: string, idx: number): boolean => {
+    const ch = src[idx];
+    if (ch === undefined) return false;
+    if (ch === "*" || ch === "+" || ch === "?") return true;
+    if (ch !== "{") return false;
+    const bound = /^\{(\d+)(,)?(\d*)\}/.exec(src.slice(idx));
+    return bound !== null && bound[2] === ",";
+  };
   const stack: { q: boolean; u: boolean; alts: string[]; cur: string }[] = [];
   let escaped = false;
   // Character-class state: inside [...] every glyph is a LITERAL — a *, +, ?, or
@@ -68,7 +79,7 @@ function isLikelyCatastrophicPattern(pattern: string): boolean {
     if (ch === ")" && stack.length > 0) {
       const g = stack.pop()!;
       g.alts.push(g.cur);
-      const groupQuantified = isQuantifier(pattern[index + 1]);
+      const groupQuantified = variableQuantifierAt(pattern, index + 1);
       const danger = g.q || g.u || hasOverlappingAlternation(g.alts);
       if (groupQuantified && danger) return true;
       if (stack.length > 0) {
@@ -78,7 +89,7 @@ function isLikelyCatastrophicPattern(pattern: string): boolean {
       }
       continue;
     }
-    if (isQuantifier(ch) && stack.length > 0) { stack[stack.length - 1].q = true; continue; }
+    if (variableQuantifierAt(pattern, index) && stack.length > 0) { stack[stack.length - 1].q = true; continue; }
     if (stack.length > 0) stack[stack.length - 1].cur += ch;
   }
   return false;

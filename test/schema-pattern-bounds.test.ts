@@ -187,3 +187,21 @@ test("quantifier glyphs inside character classes are literals, not quantifiers (
     (error: unknown): boolean => error instanceof CaptatumInputError,
   );
 });
+
+test("fixed-width {n} quantifiers inside repeated groups are linear, not catastrophic (codex P2 r8)", async () => {
+  // ^([A-Z]{2})+$ — every iteration has the same width, so there is no split
+  // ambiguity; the heuristic read {2} like an ambiguous + and rejected common
+  // JSON-Schema patterns (ISO codes, dates) at the input boundary.
+  const normalized = normalizeCaptatumInput({
+    url: "https://public.example/",
+    output: "extract",
+    schema: { type: "string", pattern: "^([A-Z]{2})+$" },
+  });
+  assert.equal(normalized.requestedOutput, "extract");
+  assert.equal((await validateJsonSchema("ABCD", normalized.schema)).valid, true);
+  // variable-width repetition inside repetition is still ambiguous and rejected
+  assert.throws(
+    () => normalizeCaptatumInput({ url: "https://public.example/", output: "extract", schema: { type: "string", pattern: "(a{2,3})+" } }),
+    (error: unknown): boolean => error instanceof CaptatumInputError,
+  );
+});
