@@ -81,3 +81,29 @@ test("a many-element pattern validation costs ONE bounded batch, not N spawns (c
   assert.equal(result.valid, true, JSON.stringify(result));
   assert.ok(elapsed < 1_500, `batched validation took ${elapsed}ms — per-element spawns are back`);
 });
+
+test("composite semantics survive batched patterns: anyOf/oneOf/not decide on REAL results (codex P2 r2)", async () => {
+  // anyOf: "b" matches only the second branch — the deferred first pattern must
+  // NOT reject it (the one-global-loop design did exactly that).
+  assert.equal(
+    (await validateJsonSchema("b", { anyOf: [{ type: "string", pattern: "^a$" }, { type: "string", pattern: "^b$" }] })).valid,
+    true,
+  );
+  assert.equal(
+    (await validateJsonSchema("c", { anyOf: [{ type: "string", pattern: "^a$" }, { type: "string", pattern: "^b$" }] })).valid,
+    false,
+  );
+  // oneOf: exactly-one match counts REAL pattern results, not deferred oks.
+  assert.equal(
+    (await validateJsonSchema("a", { oneOf: [{ type: "string", pattern: "^a$" }, { type: "string", pattern: "^a$" }] })).valid,
+    false,
+    "two matching branches = oneOf violation",
+  );
+  assert.equal(
+    (await validateJsonSchema("a", { oneOf: [{ type: "string", pattern: "^a$" }, { type: "string", pattern: "^b$" }] })).valid,
+    true,
+  );
+  // not: a pattern that does NOT match must not reject under not.
+  assert.equal((await validateJsonSchema("b", { not: { type: "string", pattern: "^a$" } })).valid, true);
+  assert.equal((await validateJsonSchema("a", { not: { type: "string", pattern: "^a$" } })).valid, false);
+});

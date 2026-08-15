@@ -48,6 +48,7 @@ export function nonNegativeInteger(
 // domain/schema-pattern.ts so the INPUT boundary and this validator share one
 // source of truth. Re-exported here for existing importers.
 export { toRegExp, MAX_PATTERN_LENGTH } from "../../domain/schema-pattern.ts";
+import { SUPPORTED_SCHEMA_KEYS, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
 export function matchesType(value: unknown, type: string): boolean {
   if (type === "array") return Array.isArray(value);
   if (type === "integer") return Number.isInteger(value);
@@ -115,3 +116,30 @@ export function isMultipleOf(value: number, divisor: number): boolean {
   const quotient = value / divisor;
   return Math.abs(quotient - Math.round(quotient)) < Number.EPSILON * 100;
 }
+
+export function validateSupported(schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  const unsupportedKey = Object.keys(schema).find((key) => !SUPPORTED_SCHEMA_KEYS.has(key));
+  return unsupportedKey ? unsupported(messageForUnsupportedKeyword(unsupportedKey, path)) : ok();
+}
+
+export function validateEnum(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  if ("const" in schema && !deepEqual(value, schema.const)) return invalid(`${path} must equal schema const`);
+  if (!("enum" in schema)) return ok();
+  if (!Array.isArray(schema.enum)) return invalid(`${path} schema enum must be an array`);
+  return schema.enum.some((candidate) => deepEqual(value, candidate))
+    ? ok()
+    : invalid(`${path} must be one of schema enum values`);
+}
+
+export function validateType(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  if (!("type" in schema)) return ok();
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (!types.every((type) => typeof type === "string" && JSON_TYPES.has(type))) {
+    return invalid(`${path} schema type must be a JSON Schema type`);
+  }
+  return types.some((type) => matchesType(value, String(type)))
+    ? ok()
+    : invalid(`${path} must be ${types.join(" or ")}`);
+}
+
+const JSON_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
