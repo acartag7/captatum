@@ -870,6 +870,22 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     assert.equal(r.sensitive, true, content);
     assert.match(r.reason ?? "", /content_embedded_/, `${content} -> ${r.reason}`);
   }
+  // A network-path authority SLICED by the 500 KB scan cap is not malformed —
+  // the complete reference may be a clean public host, and rejecting the
+  // artificial prefix would degrade large public pages on byte alignment (P2).
+  // The head ends mid-authority; the reference completes past the cap.
+  {
+    const content = "a".repeat(500_000 - 17) + " //[2606:4700::" + "1111]/docs and more text " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, false, "truncated-at-cap authority must defer, not fail closed");
+  }
+  // A malformed authority fully INSIDE the head still fails closed.
+  {
+    const content = "see //[" + "x".repeat(400_000) + " end";
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true);
+    assert.equal(r.reason, "content_embedded_malformed_network_path");
+  }
   // The #44 ad-noise carve-out survives: generic keys on relative URLs stay
   // unflagged (public pages are full of /track?token=… ad links).
   for (const content of [

@@ -180,6 +180,7 @@ export function detectSensitiveTransformInput(input: {
   // malformed host makes every URL-based helper throw-and-swallow, and a
   // reference like //user:pass@10.0.0.5:99999/file — an exposed password aimed
   // at a private host — must not egress because the parser gave up.
+  const headTruncated = content.length > MAX_CONTENT_SCAN;
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
     // Trim trailing prose punctuation + unbalanced closers BEFORE classifying:
     // Node accepts characters like ',', '!', ')' inside hostnames, so
@@ -191,6 +192,16 @@ export function detectSensitiveTransformInput(input: {
     try {
       new URL(url);
     } catch {
+      // An authority sliced by the 500 KB head boundary is NOT malformed: the
+      // complete reference (e.g. //[2606:4700::1111]/docs continuing past the
+      // cap) may be a clean public host, and rejecting the artificial prefix
+      // would degrade large public pages on byte alignment alone (codex P2) —
+      // same accepted-cap residual as a presigned URL past the cap. Only a
+      // malformed authority fully inside the head fails closed.
+      const atHeadEdge = headTruncated
+        && match.index !== undefined
+        && match.index + match[0].length >= head.length - 1;
+      if (atHeadEdge) continue;
       return { sensitive: true, reason: "content_embedded_malformed_network_path" };
     }
     const reason = userinfoCredentialReason(url)
