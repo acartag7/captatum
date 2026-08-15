@@ -14,8 +14,12 @@ import { resolveCdpConnectUrl, type CdpHostResolver } from "./cdp-connect.ts";
 import { RenderRouteState } from "./route-state.ts";
 import {
   abortRejection,
+  blockDownload,
   capRenderedBytes,
+  closePopup,
   closeQuietly,
+  closeLegacyWebSocket,
+  closeWebSocket,
   rejectFromError,
   RenderError,
   serviceWorkerAction,
@@ -218,27 +222,9 @@ async function installPageControls(
   }
 }
 
-function closePopup(popup: PlaywrightPage, actions: RenderAction[]): void {
-  actions.push({ type: "popup-closed", reason: "popups disabled", url: safeRenderUrl(popup.url()) });
-  void popup.close().catch(() => {});
-}
 
-function blockDownload(value: PlaywrightEventValue, actions: RenderAction[]): void {
-  const download = value as PlaywrightDownload;
-  actions.push({ type: "download-blocked", reason: "downloads disabled", url: safeRenderUrl(download.url()) });
-  void download.cancel?.();
-}
 
-function closeLegacyWebSocket(value: PlaywrightEventValue, actions: RenderAction[]): void {
-  const socket = value as PlaywrightWebSocket;
-  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
-  void socket.close?.();
-}
 
-async function closeWebSocket(socket: PlaywrightWebSocketRoute, actions: RenderAction[]): Promise<void> {
-  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
-  await socket.close();
-}
 
 function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number, bytes: Uint8Array, state: RenderRouteState, notice: ProvenanceError | undefined, domTextLength: number | undefined): RenderOutput {
   const egressHosts = state.egressHosts();

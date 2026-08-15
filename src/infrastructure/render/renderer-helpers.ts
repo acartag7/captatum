@@ -1,5 +1,6 @@
 import type { RejectResult } from "../../application/ports/fetcher.ts";
 import type { RenderAction } from "../../application/ports/renderer.ts";
+import { safeRenderUrl } from "./browser-url-guard.ts";
 
 /** Shared Playwright-renderer helpers (extracted for the 250-line file cap). */
 
@@ -71,4 +72,24 @@ export function capRenderedBytes(content: string, maxBytes: number): { bytes: Ui
   let cut = maxBytes;
   while (cut > 0 && (full[cut] & 0xc0) === 0x80) cut -= 1;
   return { bytes: full.subarray(0, cut), truncated: true };
+}
+
+export function blockDownload(download: { url(): string; cancel?(): Promise<void> }, actions: RenderAction[]): void {
+  actions.push({ type: "download-blocked", reason: "downloads disabled", url: safeRenderUrl(download.url()) });
+  void download.cancel?.();
+}
+
+export function closeLegacyWebSocket(socket: { url(): string; close?(): Promise<void> }, actions: RenderAction[]): void {
+  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
+  void socket.close?.();
+}
+
+export async function closeWebSocket(socket: { url(): string; close(): Promise<void> }, actions: RenderAction[]): Promise<void> {
+  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
+  await socket.close();
+}
+
+export function closePopup(popup: { url(): string; close(): Promise<void> }, actions: RenderAction[]): void {
+  actions.push({ type: "popup-closed", reason: "popups disabled", url: safeRenderUrl(popup.url()) });
+  void popup.close().catch(() => {});
 }
