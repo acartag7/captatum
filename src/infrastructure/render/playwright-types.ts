@@ -13,6 +13,9 @@ export interface PlaywrightBrowser {
 export interface PlaywrightContext {
   newPage(): Promise<PlaywrightPage>;
   close(): Promise<void>;
+  /** Fires for EVERY page created in the context — including popups and
+   *  popups-of-popups (page.on("popup") arms only the one page it is set on). */
+  on(event: "page", handler: (page: PlaywrightPage) => void): void;
   /** Context-level interception covers EVERY page in the context — including
    *  popups, which page-level routing does not (the popup-egress fix). */
   route(pattern: string, handler: RouteHandler): Promise<void>;

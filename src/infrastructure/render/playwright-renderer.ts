@@ -213,10 +213,16 @@ async function installPageControls(
   page.setDefaultTimeout?.(timeoutMs);
   page.setDefaultNavigationTimeout?.(timeoutMs);
   page.on("download", (value) => blockDownload(value, actions));
-  // A fetch-render has no use for popups: close them on sight. Context-level
-  // routing (installed by render()) guards anything they fire before the close
-  // lands, so neither layer depends on the other's timing.
-  page.on("popup", (popup) => closePopup(popup, actions));
+  // A fetch-render has no use for popups: close them on sight — at the CONTEXT
+  // level, so a popup's own window.open (a popup-of-popup) is closed too, not
+  // just top-level popups of the render page (page.on("popup") arms one page
+  // only; codex P2 r3). Context-level routing (installed by render()) guards
+  // anything a new page fires before the close lands, so neither layer depends
+  // on the other's timing.
+  context.on("page", (newPage) => {
+    if (newPage === page) return;
+    closePopup(newPage, actions);
+  });
   if (context.routeWebSocket) {
     await context.routeWebSocket("**/*", (socket) => closeWebSocket(socket, actions));
   } else {

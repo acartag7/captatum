@@ -511,7 +511,7 @@ test("a CDP connect that loses the deadline race closes its late-arriving browse
   assert.equal(harness.browserClosed, true, "late connect result must be closed");
 });
 
-test("renderer closes popups and intercepts at the context level (popup-egress fix)", async () => {
+test("renderer closes popups at the context level, including popups-of-popups (popup-egress fix + codex P2 r3)", async () => {
   const harness = new BrowserHarness();
   const renderer = new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) });
   const result = await renderer.render(renderInput(new FakeFetcher()));
@@ -521,11 +521,15 @@ test("renderer closes popups and intercepts at the context level (popup-egress f
   assert.equal(result.rendered, true);
   assert.equal(harness.contextRouteInstalled, true, "route must be installed on the context");
 
-  // A popup closes on sight; anything it fired first was context-routed (guarded).
+  // Every NEW page in the context closes on sight (context.on("page")), which
+  // covers a popup's own window.open — page.on("popup") would arm only the
+  // render page and leave a popup-of-popup alive until teardown.
+  assert.ok(harness.popupHandler, "context page handler must be installed");
   let closed = false;
-  assert.ok(harness.popupHandler, "popup handler must be installed");
-  await harness.popupHandler({ url: () => "http://popup.test/x", close: async () => { closed = true; } });
+  const nested = { url: () => "http://popup.test/nested", close: async () => { closed = true; } };
+  await harness.popupHandler(nested);
   assert.equal(closed, true);
+  assert.ok(result.actions.some((a) => a.type === "popup-closed" && a.url === "http://popup.test/nested"));
 });
 
 test("renderer returns timeout and closes the browser on stalled navigation", async () => {
@@ -628,6 +632,9 @@ class BrowserHarness {
         return {
           newPage: async () => this.page(),
           close: async () => {},
+          on: (event: "page", handler: (p: { url(): string; close(): Promise<void> }) => void) => {
+            if (event === "page") this.popupHandler = handler;
+          },
           route: async (_pattern: string, handler: (route: FakeRoute) => Promise<void> | void) => {
             this.routeHandler = handler;
             this.contextRouteInstalled = true;
@@ -654,9 +661,8 @@ class BrowserHarness {
       ? { content: async () => this.options.extraFrameContent as string }
       : undefined;
     return {
-      on: (event: "download" | "popup", handler: (value: unknown) => void) => {
+      on: (event: "download", handler: (value: unknown) => void) => {
         if (event === "download") this.downloadHandler = handler as (d: FakeDownload) => void;
-        if (event === "popup") this.popupHandler = handler as (p: { url(): string; close(): Promise<void> }) => void;
       },
       setDefaultTimeout: (_timeoutMs: number) => {},
       setDefaultNavigationTimeout: (_timeoutMs: number) => {},
