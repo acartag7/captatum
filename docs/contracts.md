@@ -1056,7 +1056,11 @@ not a tool-level error — partial failure is normal): `bulk_per_host_cap`,
 `tier2_board_not_supported_in_bulk`, `ashby_embed_not_supported_in_bulk`,
 `bulk_deadline_exceeded`, `bulk_budget_exceeded`. Tool-level errors for bulk are
 limited to input validation (`invalid_input` / `invalid_url` / `bulk_urls_empty` /
-`too_many_urls` / `extract_schema_unsupported_keyword` / `extract_schema_too_deep` / `extract_schema_tuple_unsupported` for an unsupported-after-recovery, too-deep, or tuple-form extract schema), auth, admission `OverloadedError` (`-32050`),
+`too_many_urls` / `extract_schema_unsupported_keyword` / `extract_schema_too_deep` /
+`extract_schema_tuple_unsupported` / `extract_schema_invalid_pattern` — for an
+unsupported-after-recovery, too-deep, tuple-form, or unsafely-executable
+(invalid/heuristic-flagged/oversized `pattern` content) extract schema), auth,
+admission `OverloadedError` (`-32050`),
 `bulk_quota_exceeded` (retryable), and `bulk_quota_store_error` (fail-closed).
 `bulk_render_cap_exceeded` and `bulk_retried_429` are per-seed WARNINGS (the seed
 runs degraded), not fail codes.
