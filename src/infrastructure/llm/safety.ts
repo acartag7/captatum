@@ -48,33 +48,17 @@ const SENSITIVE_HEADER_PATTERNS = [
   /set-cookie:\s*[^=\s;]{1,64}=[^;\s<]{16,}/i,
 ];
 
-/** Bounded URL-literal scan for embedded signed/internal URLs in content. Two alternations:
- *  (1) an OPTIONAL userinfo (user:pass@) then a bracketed IPv6 host, optional port, and a
- *  path/query/fragment that MUST start with '/', '?', or '#' — so prose immediately after the
- *  literal ('.', ',', '!', a markdown ']') is never absorbed, while a real path/query/fragment
- *  (incl. a credential fragment) is captured. The userinfo is '@'-anchored so it can't absorb
- *  non-userinfo prose. (2) a normal URL that excludes ']' (so a prose bracket around it stops
- *  cleanly) but ALLOWS '[' — a literal '[' in a path before a credential query (e.g.
- *  https://files.example/a[draft?access_token=…) must not truncate the match. The IPv6 alternation
- *  owns '[' at the host position, so allowing it in a normal path is safe. Bounded vs ReDoS. */
 const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>]*)?|https?:\/\/[^\s"'<>]{1,512}/gi;
 
 /** Relative credential references — the absolute-only scanner's blind spot
- *  (executed 2026-08-15: `/cb#access_token=…` egressed where the absolute
- *  spelling flagged). Two linear scans over the 500 KB head:
- *  (1) KEY-ANCHORED — any ?/#/& followed by credential-key=value, wherever the
- *      reference starts, of any path length (a path cap is a bypass waiting for
- *      a longer URL). Values match a prefix; = inside a value cannot hide the
- *      next &-separated pair; entity separators normalized first.
- *  (2) NETWORK-PATH — `//authority` carries a host, so host checks apply. The
- *      boundary is any legitimate left-adjacent context (whitespace, quotes,
- *      backticks, brackets/parens/braces/angles, pipes, emphasis, blockquote,
- *      = ; , : ! ?, Unicode quotes/dashes — swept as a class); the AUTHORITY is
- *      captured from a hostname-legality whitelist (alnum . - : @ [ ] %), so any
- *      other character terminates it — typographic tails and following prose can
- *      never reach the classifier (Node would punycode them into non-private).
- *  The #44 carve-out holds: only the credential key set flags, and a clean
- *  public //host stays unflagged. */
+ *  (executed 2026-08-15). (1) KEY-ANCHORED: any ?/#/& + credential-key=value,
+ *  any path length; values match a prefix; = in a value can't hide the next
+ *  &-separated pair; entity separators normalized. (2) NETWORK-PATH: //authority
+ *  carries a host; boundary = any legitimate left-adjacent context (whitespace,
+ *  quotes/backticks, brackets, pipes, emphasis, =;,:!?|>*_~, Unicode quotes and
+ *  dashes); the authority is captured from a hostname-legality whitelist, so any
+ *  other character terminates it. #44 carve-out holds: generic keys and clean
+ *  public //hosts never flag. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=([^\s"'<>&#]{1,512})/g;
 const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([A-Za-z0-9.\-:@\[\]%]{1,2048})/g;
 
@@ -126,11 +110,6 @@ export function detectSensitiveTransformInput(input: {
   for (const pattern of SENSITIVE_HEADER_PATTERNS) {
     if (pattern.test(content)) return { sensitive: true, reason: "content_header_dump" };
   }
-  // A public page that merely LINKS a cloud-presigned / OAuth / signed URL or an internal host
-  // must not egress to a hosted LLM. Bounded scan (ReDoS/DoS hygiene). Only real credential keys
-  // are matched (CONTENT_CREDENTIAL_QUERY_KEYS) — not the generic ad/CDN keys (`token`/`key`/
-  // `auth`/`expires`) that caused the #44 news-page false-positive regression. The credential
-  // patterns above already scanned the FULL content.
   const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
   // URL-ignored ASCII whitespace (tab/LF/CR, NOT space): Node's parser strips
   // these, so a line-wrapped URL (?access_\ntoken=…) exposes the full key to
@@ -139,18 +118,11 @@ export function detectSensitiveTransformInput(input: {
   // head — stripping newlines there would fuse adjacent references.
   const unwrapped = head.replace(/[\t\n\r]/g, "");
   for (const match of unwrapped.matchAll(SIGNED_URL_IN_CONTENT)) {
-    // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example — resolves
-    // to the READER's machine, not a leaked endpoint) is not flagged. RFC1918 / 169.254.169.254 /
-    // .corp / .internal are. A credential ANYWHERE on the URL — query key, fragment key (HTML-escaped
-    // &amp; normalized), userinfo (user:pass@), or an OAuth code/refresh_token on a loopback redirect
-    // — is checked BEFORE the exemption. Trim trailing prose punctuation a normal URL picked up
-    // (no ']' — the IPv6 close + the path's [/?#] boundary keep brackets out of the match).
-    // Prose-trim trailing punctuation, then strip trailing ']'s that are UNBALANCED (a prose
-    // bracket like [http://host]) — a balanced ']' (in a path like a[draft]) stays so the URL
-    // parses and the query/fragment after it is scanned. Bounded string slices, no parse loop.
-    // Prose-trim trailing punctuation, then strip trailing ']' / ')' that are UNBALANCED (a prose
-    // bracket/paren around the URL has no matching opener in the match; a balanced path delimiter
-    // like a[draft] or cb(v2) stays so the URL parses + a query/fragment after it is scanned).
+    // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup
+    // example — resolves to the READER's machine) is not flagged; RFC1918 /
+    // 169.254.169.254 / .corp / .internal are. A credential ANYWHERE on the URL —
+    // query key, fragment key, userinfo, or an OAuth code on a loopback redirect —
+    // is checked BEFORE the exemption. Prose punctuation/closers trimmed.
     let url = stripTrailingProseClosers(match[0].replace(/[.,;:!?]+$/, ""));
     const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? fragmentCredentialReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
@@ -168,52 +140,77 @@ export function detectSensitiveTransformInput(input: {
       return { sensitive: true, reason: "content_embedded_signed_or_tokenized_url" };
     }
   }
-  // (2) network-path references: a host is present, so host-class checks apply.
-  // FAIL CLOSED on an unparseable authority (codex P1 r5): an invalid port or
-  // malformed host makes every URL-based helper throw-and-swallow, and a
-  // reference like //user:pass@10.0.0.5:99999/file — an exposed password aimed
-  // at a private host — must not egress because the parser gave up.
+  // (2) network-path references: a host is present, so host checks apply.
   const headTruncated = content.length > MAX_CONTENT_SCAN;
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
-    // NO trailing-punctuation trim: the hostname whitelist already excludes
-    // non-hostname characters, `.` is stripped by internalHostReason itself, and
-    // trimming `:` would rescue a malformed empty/double-colon port (codex P2).
+    // Hostname-whitelist capture; NO punctuation trim (trimming ':' would
+    // rescue a malformed empty/double-colon port).
     const authority = match[1] ?? "";
-    const url = `https://${authority}`;
+    const atEdge = headTruncated
+      && match.index !== undefined
+      && match.index + match[0].length === head.length;
+    if (atEdge) {
+      // The reference is SLICED by the 500 KB boundary: its completion is
+      // unknown, and a URL parse of the prefix is a PHANTOM (shorthand
+      // reinterprets "169.254." as the public 169.0.0.254) — never classify a
+      // phantom. Defer, except evidence CONCLUSIVE inside the slice: a
+      // complete user:pass@ (an exposed password), or a host whose every
+      // completion is internal (see conclusiveEvidence).
+      const atSign = authority.lastIndexOf("@");
+      if (atSign > 0 && authority.slice(0, atSign).includes(":")) {
+        return { sensitive: true, reason: "content_embedded_userinfo_credential" };
+      }
+      const reason = conclusiveEvidence(authority.slice(atSign + 1).replace(/:.*/, ""));
+      if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
+      continue;
+    }
+    let url = `https://${authority}`;
     try {
-      // RFC 6874 zone identifiers (%25eth0) throw in a raw parse but the helpers
-      // strip them — validate the same normalized form the classifiers see.
+      // RFC 6874 zones (%25eth0) throw raw but helpers strip them — validate the
+      // same normalized form the classifiers see.
       new URL(url.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]"));
     } catch {
-      // A match genuinely SLICED by the 500 KB boundary (its last char IS the
-      // head's last char; a match ending one earlier keeps its terminator inside
-      // the head — complete, fails closed) is not malformed: the reference may
-      // complete as a clean public host past the cap (same accepted-cap residual
-      // as a presigned URL past the cap). Defer — but never throw away evidence
-      // already conclusive INSIDE the slice.
-      const atHeadEdge = headTruncated
-        && match.index !== undefined
-        && match.index + match[0].length === head.length;
-      if (atHeadEdge) {
-        // Conclusive user:pass@ (codex P1)...
-        const atSign = authority.lastIndexOf("@");
-        if (atSign > 0 && authority.slice(0, atSign).includes(":")) {
-          return { sensitive: true, reason: "content_embedded_userinfo_credential" };
-        }
-        // ...and an internal host fully visible before an invalid port (P1).
-        const hostPart = authority.slice(atSign + 1).replace(/:\d*$/, "");
-        const hostReason = internalHostReason(`https://${hostPart}`, true);
-        if (hostReason) return { sensitive: true, reason: `content_embedded_${hostReason}` };
-        continue; // genuinely inconclusive at the slice — defer
-      }
       return { sensitive: true, reason: "content_embedded_malformed_network_path" };
     }
+    url = url.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
     const reason = userinfoCredentialReason(url)
       ?? loopbackOAuthCredentialReason(url)
       ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };
+}
+
+/** Evidence CONCLUSIVE in a SLICED host (completion past the cap unknown; a
+ *  URL parse of the prefix is a phantom — shorthand reinterprets "169.254." as
+ *  the public 169.0.0.254 — so never classify phantoms). Letter hosts and
+ *  complete numeric hosts classify normally; numeric PARTIALS only when EVERY
+ *  completion is private (first octet 0/10/>=224; 192.168./169.254./100.64-127./
+ *  172.16-31. two-octet forms); unclosed [fd/[fc (ULA) and [fe8-feb
+ *  (link-local) brackets. Ambiguous (172., 100., partial octets) and loopback
+ *  (#127 content exemption) defer. */
+function conclusiveEvidence(host: string): string | undefined {
+  if (host.startsWith("[")) {
+    if (!host.includes("]") && (/^\[f[cd]/i.test(host) || /^\[fe[89ab]/i.test(host))) {
+      return "internal_host";
+    }
+    return internalHostReason(`https://${host}`, true) ?? undefined;
+  }
+  if (/[a-z]/i.test(host)) return internalHostReason(`https://${host}`, true) ?? undefined;
+  const parts = host.split(".");
+  const first = Number(parts[0]);
+  const complete = parts.length === 4 && parts.every((p) => /^\d+$/.test(p));
+  if (complete) return internalHostReason(`https://${host}`, true) ?? undefined;
+  if (Number.isInteger(first) && (first === 0 || first === 10 || first >= 224)) {
+    return "internal_host";
+  }
+  const second = Number(parts[1]);
+  if (!Number.isInteger(second)) return undefined;
+  if (first === 192 && second === 168) return "internal_host";
+  if (first === 169 && second === 254) return "internal_host";
+  if (first === 100 && second >= 64 && second <= 127) return "internal_host";
+  if (first === 172 && second >= 16 && second <= 31) return "internal_host";
+  return undefined;
 }
 
 /** Redact signed/tokenized param values from a URL before display (INFOLEAK-1). HOST-AGNOSTIC

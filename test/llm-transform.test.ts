@@ -881,6 +881,42 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     assert.equal(r.sensitive, true, content);
     assert.match(r.reason ?? "", /content_embedded_/, `${content} -> ${r.reason}`);
   }
+  // SIBLING SWEEP of the cap edge — every evidence class enumerated once, not
+  // one review round at a time. The slice never classifies PHANTOM parses
+  // (URL shorthand reinterprets "169.254." as the public 169.0.0.254): only
+  // userinfo, every-completion-internal numeric prefixes, ULA/link-local
+  // unclosed brackets, and letter hosts with internal suffixes are conclusive.
+  {
+    const mk = (tail) => "a".repeat(500_000 - tail.length) + tail;
+    const beyond = " continues " + "b".repeat(500);
+    const flagged = [
+      " //alice:secret@10.0.0.5", // userinfo before slice
+      " //10.0.0.5:99999", // internal + invalid port
+      " //service.internal:99999", // internal suffix + invalid port
+      " //10.", // every completion of 10.* is private
+      " //192.168.", " //169.254.", // phantom parses as PUBLIC — prefix still conclusive
+      " //100.64.", " //172.16.", // CGNAT / private-172 two-octet forms
+      " //[fd12::1", " //[fd00:", " //[fe80:", // unclosed ULA / link-local
+      " //224.", " //0.", // multicast / this-network
+    ];
+    for (const tail of flagged) {
+      const r = detectSensitiveTransformInput({ content: mk(tail) + beyond, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, `${tail} -> ${JSON.stringify(r)}`);
+    }
+    const deferred = [
+      " //example.com", // public, nothing conclusive
+      " //example.com:99999", // public + invalid port
+      " //[2606:4700::", " //[2606:4700::1111%25e", // global v6 slices
+      " //172.", " //100.", // AMBIGUOUS prefixes (172.1.x / 100.1.x public)
+      " //127.0.0.1:99999", // loopback: the #127 content exemption
+      " //alice@10.0.0.5", // username not a secret — host IS internal so flags via host
+    ];
+    // NOTE: alice@10.0.0.5 flags (host internal); keep only true deferrals here:
+    for (const tail of [" //example.com", " //example.com:99999", " //[2606:4700::", " //[2606:4700::1111%25e", " //172.", " //100.", " //127.0.0.1:99999", " //alice@example.com"]) {
+      const r = detectSensitiveTransformInput({ content: mk(tail) + beyond, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, false, `${tail} -> ${JSON.stringify(r)}`);
+    }
+  }
   // A network-path authority SLICED by the 500 KB scan cap is not malformed —
   // the complete reference may be a clean public host, and rejecting the
   // artificial prefix would degrade large public pages on byte alignment (P2).
