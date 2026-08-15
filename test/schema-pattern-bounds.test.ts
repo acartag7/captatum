@@ -1,0 +1,71 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { CaptatumInputError, normalizeCaptatumInput } from "../src/application/use-cases/captatum-input.ts";
+import { normalizeBulkInput } from "../src/application/use-cases/bulk-input.ts";
+import { validateJsonSchema } from "../src/infrastructure/llm/json-schema.ts";
+
+// Pattern bounds (adversarial assessment 2026-08-15, findings V2 + V5):
+// V5 — `pattern` content must be validated at the INPUT boundary so an
+//      oversized/heuristic-flagged/invalid pattern is rejected BEFORE any
+//      fetch/LLM spend (it previously died only at finalize, after the bill).
+// V2 — the catastrophic-shape heuristic is approximate; a semantically
+//      overlapping alternation with length-differing branches ((\s|\x20)+)
+//      passes it and backtracks exponentially (9.2 s @ 28 chars, synchronous
+//      event-loop stall). Pattern EXECUTION is therefore wall-clock bounded on
+//      a worker thread, fail-closed.
+
+const BOMB_PATTERN = "^(\\s|\\x20)+x$"; // passes the heuristic; exponential in V8
+
+test("input boundary rejects invalid pattern content before any fetch (single captatum)", () => {
+  for (const schema of [
+    { type: "string", pattern: "a".repeat(200) }, // oversized
+    { type: "string", pattern: "^(a|a)+$" }, // heuristic-flagged
+    { type: "string", pattern: "(" }, // syntactically invalid
+    { type: "string", pattern: 5 }, // non-string
+  ]) {
+    assert.throws(
+      () => normalizeCaptatumInput({ url: "https://public.example/", output: "extract", schema }),
+      (error: unknown): boolean =>
+        error instanceof CaptatumInputError && error.body.error.code === "extract_schema_invalid_pattern",
+      JSON.stringify(schema).slice(0, 60),
+    );
+  }
+});
+
+test("input boundary rejects invalid pattern content for captatum_bulk's uniform schema too", () => {
+  assert.throws(
+    () => normalizeBulkInput({ urls: ["https://public.example/"], output: "extract", schema: { type: "string", pattern: "(" } }),
+    (error: unknown): boolean =>
+      error instanceof CaptatumInputError && error.body.error.code === "extract_schema_invalid_pattern",
+  );
+});
+
+test("a legitimate pattern still passes the input boundary and validates", async () => {
+  const normalized = normalizeCaptatumInput({
+    url: "https://public.example/",
+    output: "extract",
+    schema: { type: "object", properties: { email: { type: "string", pattern: "^[^@]+@[^@]+$" } } },
+  });
+  assert.equal(normalized.requestedOutput, "extract");
+  assert.equal(
+    (await validateJsonSchema({ email: "a@b.c" }, normalized.schema)).valid,
+    true,
+  );
+});
+
+test("heuristic-bypass bomb: accepted at input, bounded at execution (V2 regression)", async () => {
+  // The boundary still ACCEPTS this pattern (the heuristic is text-based and
+  // cannot see \s ⊇ \x20) — that residual is exactly why execution must be
+  // time-bounded. Unfixed code stalls the event loop: 9.2 s at 28 chars, and
+  // ~2^N beyond — 40 chars is minutes, so this test only passes with the bound.
+  normalizeCaptatumInput({ url: "https://public.example/", output: "extract", schema: { type: "string", pattern: BOMB_PATTERN } });
+  const value = " ".repeat(40) + "y"; // matching prefix, failing suffix
+
+  const started = Date.now();
+  const result = await validateJsonSchema(value, { type: "string", pattern: BOMB_PATTERN });
+  const elapsed = Date.now() - started;
+
+  assert.equal(result.valid, false, "a timed-out pattern must fail CLOSED (not verified)");
+  assert.match(result.message ?? "", /time budget/);
+  assert.ok(elapsed < 3_000, `bounded execution took ${elapsed}ms — the wall-clock budget did not bind`);
+});

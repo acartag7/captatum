@@ -9,7 +9,7 @@ type Recurse = (
   schema: unknown,
   path: string,
   stack: Set<Record<string, unknown>>,
-) => SchemaValidationResult;
+) => Promise<SchemaValidationResult>;
 
 /**
  * Evaluate allOf / anyOf / oneOf / not. An unsupported keyword found inside any
@@ -17,36 +17,36 @@ type Recurse = (
  * verified) rather than collapsing the composite down to a boolean and dropping
  * the unsupported signal.
  */
-export function validateComposites(
+export async function validateComposites(
   value: unknown,
   schema: Record<string, unknown>,
   path: string,
   stack: Set<Record<string, unknown>>,
   recurse: Recurse,
-): SchemaValidationResult {
+): Promise<SchemaValidationResult> {
   const allOf = schemaList(schema.allOf, "allOf", path);
   if (!allOf.valid) return allOf;
   for (const subschema of allOf.value) {
-    const result = recurse(value, subschema, path, stack);
+    const result = await recurse(value, subschema, path, stack);
     if (!result.valid) return result;
   }
 
   const anyOf = schemaList(schema.anyOf, "anyOf", path);
   if (!anyOf.valid) return anyOf;
   if (anyOf.value.length > 0) {
-    const result = disjunction(value, anyOf.value, path, stack, recurse, false);
+    const result = await disjunction(value, anyOf.value, path, stack, recurse, false);
     if (!result.valid) return result;
   }
 
   const oneOf = schemaList(schema.oneOf, "oneOf", path);
   if (!oneOf.valid) return oneOf;
   if (oneOf.value.length > 0) {
-    const result = disjunction(value, oneOf.value, path, stack, recurse, true);
+    const result = await disjunction(value, oneOf.value, path, stack, recurse, true);
     if (!result.valid) return result;
   }
 
   if ("not" in schema) {
-    const result = recurse(value, schema.not, path, stack);
+    const result = await recurse(value, schema.not, path, stack);
     if (result.unsupported) return result;
     if (result.valid) return invalid(`${path} must not match not schema`);
   }
@@ -54,17 +54,17 @@ export function validateComposites(
 }
 
 /** Shared anyOf (exactOne=false) / oneOf (exactOne=true) evaluation. */
-function disjunction(
+async function disjunction(
   value: unknown,
   choices: unknown[],
   path: string,
   stack: Set<Record<string, unknown>>,
   recurse: Recurse,
   exactOne: boolean,
-): SchemaValidationResult {
+): Promise<SchemaValidationResult> {
   let matches = 0;
   for (const choice of choices) {
-    const result = recurse(value, choice, path, stack);
+    const result = await recurse(value, choice, path, stack);
     if (result.unsupported) return result;
     if (result.valid) matches += 1;
   }

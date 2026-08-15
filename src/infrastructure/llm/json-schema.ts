@@ -1,5 +1,6 @@
 import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, stringArray, stripJsonFence, unsupported, toRegExp, type SchemaValidationResult } from "./json-schema-utils.ts";
 import { validateComposites } from "./json-schema-composites.ts";
+import { testPatternBounded } from "./bounded-pattern.ts";
 import { SUPPORTED_SCHEMA_KEYS, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
 
 export type { SchemaValidationResult } from "./json-schema-utils.ts";
@@ -11,30 +12,34 @@ export function parseJsonResult(text: string): unknown {
   return JSON.parse(trimmed) as unknown;
 }
 
-export function validateJsonSchema(value: unknown, schema: unknown): SchemaValidationResult {
+export async function validateJsonSchema(value: unknown, schema: unknown): Promise<SchemaValidationResult> {
   if (schema === undefined || schema === true) return ok();
   if (schema === false) return invalid("$ is not allowed by false schema");
   if (!isRecord(schema)) return invalid("schema must be an object or boolean");
-  return validateAt(value, schema, "$", new Set());
+  return await validateAt(value, schema, "$", new Set());
 }
 
-function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Record<string, unknown>>): SchemaValidationResult {
+async function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Record<string, unknown>>): Promise<SchemaValidationResult> {
   if (schema === true) return ok();
   if (schema === false) return invalid(`${path} is not allowed by false schema`);
   if (!isRecord(schema)) return invalid(`${path} schema must be an object or boolean`);
   if (stack.has(schema)) return ok();
   stack.add(schema);
   try {
-    for (const result of [
-      validateSupported(schema, path),
-      validateComposites(value, schema, path, stack, validateAt),
-      validateEnum(value, schema, path),
-      validateType(value, schema, path),
-      validateString(value, schema, path),
-      validateNumber(value, schema, path),
-      validateObject(value, schema, path, stack),
-      validateArray(value, schema, path, stack),
-    ]) {
+    // Thunks keep the ORIGINAL evaluation order + short-circuit: each step
+    // awaits only when reached (an early failure skips later pattern tests).
+    const steps: Array<() => SchemaValidationResult | Promise<SchemaValidationResult>> = [
+      () => validateSupported(schema, path),
+      () => validateComposites(value, schema, path, stack, validateAt),
+      () => validateEnum(value, schema, path),
+      () => validateType(value, schema, path),
+      () => validateString(value, schema, path),
+      () => validateNumber(value, schema, path),
+      () => validateObject(value, schema, path, stack),
+      () => validateArray(value, schema, path, stack),
+    ];
+    for (const step of steps) {
+      const result = await step();
       if (!result.valid) return result;
     }
     return ok();
@@ -68,7 +73,7 @@ function validateType(value: unknown, schema: Record<string, unknown>, path: str
     : invalid(`${path} must be ${types.join(" or ")}`);
 }
 
-function validateString(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
+async function validateString(value: unknown, schema: Record<string, unknown>, path: string): Promise<SchemaValidationResult> {
   for (const key of ["minLength", "maxLength"] as const) {
     const result = nonNegativeInteger(schema, key, path);
     if (!result.valid) return result;
@@ -93,7 +98,15 @@ function validateString(value: unknown, schema: Record<string, unknown>, path: s
     // caller knows the pattern could not be fully checked (non-fatal advisory).
     const MAX_PATTERN_VALUE_LENGTH = 8192;
     if (value.length > MAX_PATTERN_VALUE_LENGTH) return invalid(`${path} exceeds the 8 KiB pattern-validation cap; pattern not verified`);
-    if (!pattern.value.test(value)) return invalid(`${path} must match pattern ${schema.pattern}`);
+    // Execute on a worker under a wall-clock budget: the input-boundary heuristic
+    // is approximate, and a semantically-overlapping alternation that passes it
+    // can still backtrack exponentially (a synchronous test = event-loop stall).
+    // Timeout/worker failure is FAIL-CLOSED: the pattern could not be verified.
+    const bounded = await testPatternBounded(pattern.value, value);
+    if (!bounded.ok) {
+      return invalid(`${path} could not be verified within the pattern time budget; pattern not verified`);
+    }
+    if (!bounded.matched) return invalid(`${path} must match pattern ${schema.pattern}`);
   }
   return ok();
 }
@@ -131,7 +144,7 @@ function validateNumber(value: unknown, schema: Record<string, unknown>, path: s
   return ok();
 }
 
-function validateObject(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>): SchemaValidationResult {
+async function validateObject(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>): Promise<SchemaValidationResult> {
   if (schema.type !== "object" && !isRecord(value)) return ok();
   if (!isRecord(value)) return invalid(`${path} must be object`);
   for (const key of ["minProperties", "maxProperties"] as const) {
@@ -157,20 +170,20 @@ function validateObject(value: unknown, schema: Record<string, unknown>, path: s
   if (!properties.valid) return properties;
   for (const [key, propertySchema] of Object.entries(properties.value)) {
     if (Object.hasOwn(value, key)) {
-      const result = validateAt(value[key], propertySchema, `${path}.${key}`, stack);
+      const result = await validateAt(value[key], propertySchema, `${path}.${key}`, stack);
       if (!result.valid) return result;
     }
   }
-  return validateAdditionalProperties(value, schema, properties.value, path, stack);
+  return await validateAdditionalProperties(value, schema, properties.value, path, stack);
 }
 
-function validateAdditionalProperties(
+async function validateAdditionalProperties(
   value: Record<string, unknown>,
   schema: Record<string, unknown>,
   properties: Record<string, unknown>,
   path: string,
   stack: Set<Record<string, unknown>>,
-): SchemaValidationResult {
+): Promise<SchemaValidationResult> {
   const additional = schema.additionalProperties;
   if (additional !== undefined && typeof additional !== "boolean" && !isRecord(additional)) {
     return invalid(`${path} schema additionalProperties must be a boolean or schema`);
@@ -181,14 +194,14 @@ function validateAdditionalProperties(
   for (const key of Object.keys(value).filter((candidate) => !Object.hasOwn(properties, candidate))) {
     if (additional === false) return invalid(`${path}.${key} is not allowed`);
     if (additional !== undefined && additional !== true) {
-      const result = validateAt(value[key], additional, `${path}.${key}`, stack);
+      const result = await validateAt(value[key], additional, `${path}.${key}`, stack);
       if (!result.valid) return result;
     }
   }
   return ok();
 }
 
-function validateArray(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>): SchemaValidationResult {
+async function validateArray(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>): Promise<SchemaValidationResult> {
   if (schema.type !== "array" && !Array.isArray(value)) return ok();
   if (!Array.isArray(value)) return invalid(`${path} must be array`);
   for (const key of ["minItems", "maxItems"] as const) {
@@ -208,7 +221,7 @@ function validateArray(value: unknown, schema: Record<string, unknown>, path: st
   if (!("items" in schema)) return ok();
   if (Array.isArray(schema.items)) return invalid(`${path} schema items tuple arrays are not supported`);
   for (let index = 0; index < value.length; index += 1) {
-    const result = validateAt(value[index], schema.items, `${path}[${index}]`, stack);
+    const result = await validateAt(value[index], schema.items, `${path}[${index}]`, stack);
     if (!result.valid) return result;
   }
   return ok();

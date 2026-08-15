@@ -1018,7 +1018,12 @@ advisory** entry inside a *successful* `Result.errors` (a mid-read truncation wi
 partial bytes). (`max_bytes` — Tier-1/Tier-3 cap — and `extract_schema_invalid` —
 transform/extract — are non-fatal advisories only; they never hard-reject a fetch.) Input
 validation also hard-rejects, before any egress, as JSON-RPC `InvalidParams`
-rather than a guarded-fetch receipt: `extract_schema_unsupported_keyword` for an
+`extract_schema_invalid_pattern` for a `pattern` whose content captatum cannot
+safely execute (oversized >128 chars, a likely-catastrophic backtracking shape,
+syntactically invalid, or non-string — checked at the same input boundary so
+no fetch/LLM spend happens first; pattern EXECUTION against model output is
+wall-clock-bounded on a worker thread and fails closed on timeout),
+`extract_schema_unsupported_keyword` for an
 `output:"extract"` schema using a keyword the validator cannot verify after the six recoverable
 root-level Captatum knobs are extracted and warned (`schema_knob_extracted`; allowlist fail-closed;
 distinct from the advisory `extract_schema_invalid`; applies to `captatum_bulk`'s uniform

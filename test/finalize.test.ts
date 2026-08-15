@@ -24,25 +24,25 @@ function input(mode: "summarize" | "extract", schema?: unknown): TransformInput 
   };
 }
 
-test("finalize records one 'success' outcome on a clean summary", () => {
+test("finalize records one 'success' outcome on a clean summary", async () => {
   const router = new RecordingRouter();
-  finalize(input("summarize"), "a good summary", "m", router);
+  await finalize(input("summarize"), "a good summary", "m", router);
   assert.equal(router.calls.length, 1);
   assert.equal(router.calls[0].outcome, "success");
 });
 
-test("finalize records one 'success' outcome on a schema-valid extract", () => {
+test("finalize records one 'success' outcome on a schema-valid extract", async () => {
   const router = new RecordingRouter();
-  finalize(input("extract", { type: "object", properties: { a: { type: "string" } } }), '{"a":"x"}', "m", router);
+  await finalize(input("extract", { type: "object", properties: { a: { type: "string" } } }), '{"a":"x"}', "m", router);
   assert.equal(router.calls.length, 1);
   assert.equal(router.calls[0].outcome, "success");
 });
 
-test("finalize records one 'soft' outcome on a schema mismatch — no follow-up success", () => {
+test("finalize records one 'soft' outcome on a schema mismatch — no follow-up success", async () => {
   // The mismatch path records 'soft' (NOT a hard failure — garbage-ish output is tolerated and
   // must not feed demotion); finalize must not then also record 'success' (one outcome per attempt).
   const router = new RecordingRouter();
-  const out = finalize(
+  const out = await finalize(
     input("extract", { type: "object", properties: { a: { type: "string" } } }),
     '{"a":123}',
     "m",
@@ -53,12 +53,12 @@ test("finalize records one 'soft' outcome on a schema mismatch — no follow-up 
   assert.equal(router.calls[0].outcome, "soft");
 });
 
-test("finalize records one 'hard_fail' outcome (and fails closed) for an unsupported schema keyword", () => {
+test("finalize records one 'hard_fail' outcome (and fails closed) for an unsupported schema keyword", async () => {
   const router = new RecordingRouter();
   // #153: the retained defense-in-depth throw carries the rephrased message (leads with the
   // offending key — the captatum.ts catch maps this code to reason "schema_validation_failed").
-  assert.throws(
-    () => finalize(
+  await assert.rejects(
+    async () => await finalize(
       input("extract", { type: "object", properties: { a: { type: "string", format: "email" } } }),
       '{"a":"x"}',
       "m",
