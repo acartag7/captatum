@@ -848,6 +848,11 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "what? access the token section",
     "//example.com/public", // network-path to a clean public host
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
+    // ... and only at a reference BOUNDARY: Python floor division (value//10) and
+    // a // inside an absolute URL's path are NOT authorities (Node parses bare
+    // numbers as IPv4 — public pages silently degraded to raw) (codex P1)
+    "halve it: value//10 in the loop",
+    "see https://example.com/a//2 for details",
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
     assert.equal(r.sensitive, false, content);
