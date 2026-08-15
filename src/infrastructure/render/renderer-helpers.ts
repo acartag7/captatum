@@ -1,5 +1,8 @@
 import type { RejectResult } from "../../application/ports/fetcher.ts";
-import type { RenderAction } from "../../application/ports/renderer.ts";
+import type { RenderAction, RenderFailure, RenderInput, RenderOutput } from "../../application/ports/renderer.ts";
+import type { ProvenanceError } from "../../domain/result.ts";
+import type { RenderRouteState } from "./route-state.ts";
+import { streamFromBytes } from "../http/body.ts";
 import { safeRenderUrl } from "./browser-url-guard.ts";
 
 /** Shared Playwright-renderer helpers (extracted for the 250-line file cap). */
@@ -92,4 +95,30 @@ export async function closeWebSocket(socket: { url(): string; close(): Promise<v
 export function closePopup(popup: { url(): string; close(): Promise<void> }, actions: RenderAction[]): void {
   actions.push({ type: "popup-closed", reason: "popups disabled", url: safeRenderUrl(popup.url()) });
   void popup.close().catch(() => {});
+}
+
+export function renderSuccess(input: RenderInput, pageUrl: string, status: number, bytes: Uint8Array, state: RenderRouteState, notice: ProvenanceError | undefined, domTextLength: number | undefined): RenderOutput {
+  const egressHosts = state.egressHosts();
+  return {
+    rendered: true,
+    fetchResult: {
+      status,
+      finalUrl: state.finalUrl || safeRenderUrl(pageUrl) || input.url,
+      redirects: state.redirects,
+      bodyStream: streamFromBytes(bytes),
+      contentType: "text/html; charset=utf-8",
+      bytes: bytes.byteLength,
+    },
+    actions: state.actions,
+    egressBytes: state.egressBytes(),
+    ...(egressHosts.length > 0 ? { egressHosts } : {}),
+    ...(domTextLength !== undefined ? { domTextLength } : {}),
+    ...(notice ? { notice } : {}),
+  };
+}
+
+export function renderFailure(rejected: RejectResult, actions: RenderAction[], state: RenderRouteState): RenderFailure {
+  // A failed render may have fulfilled subresources before failing — carry the partial egress (codex R2 P2).
+  const egressHosts = state.egressHosts();
+  return { ...rejected, rendered: false, actions, egressBytes: state.egressBytes(), ...(egressHosts.length ? { egressHosts } : {}) };
 }
