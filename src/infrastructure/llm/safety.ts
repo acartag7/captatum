@@ -171,7 +171,13 @@ export function detectSensitiveTransformInput(input: {
   // reference like //user:pass@10.0.0.5:99999/file — an exposed password aimed
   // at a private host — must not egress because the parser gave up.
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
-    const url = `https://${match[1]}`;
+    // Trim trailing prose punctuation + unbalanced closers BEFORE classifying:
+    // Node accepts characters like ',', '!', ')' inside hostnames, so
+    // //10.0.0.5, parses with hostname "10.0.0.5," — not a private IP — and
+    // the internal reference egressed (codex P1). Same normalization the
+    // absolute-URL scan applies.
+    const authority = stripTrailingProseClosers((match[1] ?? "").replace(/[.,;:!?]+$/, ""));
+    const url = `https://${authority}`;
     try {
       new URL(url);
     } catch {

@@ -819,6 +819,12 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//alice:correcthorse@example.com/file",
     "//169.254.169.254/latest/meta-data",
     "//10.0.0.5/admin",
+    // trailing PROSE PUNCTUATION stays in the raw authority — Node accepts , ! )
+    // as hostname chars, so the unnormalized form parsed as "10.0.0.5," and
+    // egressed (codex P1)
+    "cfg //10.0.0.5, then more",
+    "see (//169.254.169.254) for creds",
+    "cfg //10.0.0.5:80, next",
     "//cdn.example/f?sig=abcdEFGH1234567890",
     // FAIL CLOSED on unparseable authorities: an exposed password aimed at a
     // private host behind an invalid port must not egress (codex P1 r5)
@@ -848,6 +854,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "what? access the token section",
     "//example.com/public", // network-path to a clean public host
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
+    "docs //example.com, chapter 2", // punctuation on a public host stays clean too
     // ... and only at a reference BOUNDARY: Python floor division (value//10) and
     // a // inside an absolute URL's path are NOT authorities (Node parses bare
     // numbers as IPv4 — public pages silently degraded to raw) (codex P1)
