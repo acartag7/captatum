@@ -13,6 +13,7 @@ import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browse
 import { resolveCdpConnectUrl, type CdpHostResolver } from "./cdp-connect.ts";
 import { RenderRouteState } from "./route-state.ts";
 import {
+  abortRejection,
   capRenderedBytes,
   closeQuietly,
   rejectFromError,
@@ -86,8 +87,19 @@ export class PlaywrightRenderer implements RenderPort {
           // Connect over the RESOLVED address: Chromium's DevTools server 500s any
           // request whose Host header is not an IP/localhost, so dialing the Service
           // DNS name fails at /json/version (observed in production; see cdp-connect.ts).
-          this.cdpBrowser = await playwright.chromium.connectOverCDP(
-            await resolveCdpConnectUrl(this.cdpEndpoint, this.cdpResolver),
+          // The resolution + connect run BEFORE the per-request timeout bookkeeping
+          // below, so they carry their own bound: the render deadline AND the caller's
+          // abort signal (the bulk wall) — a stalled DNS lookup must not hold a render
+          // slot past either (codex P1).
+          const endpoint = this.cdpEndpoint; // narrowed for the closure below
+          const connect = (async () => playwright.chromium.connectOverCDP(
+            await resolveCdpConnectUrl(endpoint, this.cdpResolver),
+          ))();
+          this.cdpBrowser = await withTimeout(
+            input.signal
+              ? Promise.race([connect, abortRejection(input.signal)])
+              : connect,
+            input.timeoutMs,
           );
         }
         browser = this.cdpBrowser;

@@ -40,6 +40,21 @@ export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Pr
   }
 }
 
+/** A never-resolving promise that rejects with the render-timeout error the moment
+ *  `signal` aborts — race it against phases that have no abort wiring of their own
+ *  (e.g. the CDP DNS resolution), so a caller's bulk wall deadline still bounds them.
+ *  Rejects immediately for an already-aborted signal. */
+export function abortRejection(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    const onAbort = (): void => reject(new Error("render_timeout"));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function closeQuietly(closeable: { close(): Promise<void> } | undefined): Promise<void> {
   try {
     await closeable?.close();

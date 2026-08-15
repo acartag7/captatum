@@ -458,6 +458,38 @@ test("renderer byte-cap truncation respects UTF-8 boundaries for multibyte conte
   assert.equal(Buffer.from(decoded, "utf8").toString("utf8"), decoded);
 });
 
+test("a stalled CDP DNS resolution fails within the render deadline, not never (codex P1)", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: harness.load,
+    guard: new FakeGuard({}),
+    cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    // CoreDNS unavailable: the lookup never settles.
+    cdpResolver: () => new Promise<string>(() => {}),
+  });
+  const input = renderInput(new FakeFetcher());
+  const t0 = Date.now();
+  const result = await renderer.render({ ...input, timeoutMs: 150 });
+  const elapsed = Date.now() - t0;
+  assert.equal(result.rendered, false);
+  assert.equal(result.code, "timeout");
+  assert.ok(elapsed < 5_000, `stalled resolution must be deadline-bounded, took ${elapsed}ms`);
+});
+
+test("an already-aborted bulk wall rejects the CDP connect before any browser work", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: harness.load,
+    guard: new FakeGuard({}),
+    cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    cdpResolver: () => new Promise<string>(() => {}),
+  });
+  const input = renderInput(new FakeFetcher());
+  const result = await renderer.render({ ...input, timeoutMs: 5_000, signal: AbortSignal.abort() });
+  assert.equal(result.rendered, false);
+  assert.equal(result.code, "timeout");
+});
+
 test("renderer returns timeout and closes the browser on stalled navigation", async () => {
   const harness = new BrowserHarness({ neverResolve: true });
   const result = await new PlaywrightRenderer({ loadPlaywright: harness.load })
