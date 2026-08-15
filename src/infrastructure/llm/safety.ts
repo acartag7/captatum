@@ -185,26 +185,26 @@ export function detectSensitiveTransformInput(input: {
       // strip them — validate the same normalized form the classifiers see.
       new URL(url.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]"));
     } catch {
-      // An authority sliced by the 500 KB head boundary is NOT malformed: the
-      // complete reference (e.g. //[2606:4700::1111]/docs continuing past the
-      // cap) may be a clean public host, and rejecting the artificial prefix
-      // would degrade large public pages on byte alignment alone (codex P2) —
-      // same accepted-cap residual as a presigned URL past the cap. Only a
-      // malformed authority fully inside the head fails closed.
-      // EXACTLY at the cap (a match ending at head.length - 1 keeps its
-      // terminator inside the head — complete, fails closed); only a match whose
-      // last char IS the head's last char is genuinely sliced.
+      // A match genuinely SLICED by the 500 KB boundary (its last char IS the
+      // head's last char; a match ending one earlier keeps its terminator inside
+      // the head — complete, fails closed) is not malformed: the reference may
+      // complete as a clean public host past the cap (same accepted-cap residual
+      // as a presigned URL past the cap). Defer — but never throw away evidence
+      // already conclusive INSIDE the slice.
       const atHeadEdge = headTruncated
         && match.index !== undefined
         && match.index + match[0].length === head.length;
       if (atHeadEdge) {
-        // A COMPLETE user:pass@ before the slice point is conclusive — never
-        // defer an exposed password away because the host was sliced (codex P1).
+        // Conclusive user:pass@ (codex P1)...
         const atSign = authority.lastIndexOf("@");
         if (atSign > 0 && authority.slice(0, atSign).includes(":")) {
           return { sensitive: true, reason: "content_embedded_userinfo_credential" };
         }
-        continue;
+        // ...and an internal host fully visible before an invalid port (P1).
+        const hostPart = authority.slice(atSign + 1).replace(/:\d*$/, "");
+        const hostReason = internalHostReason(`https://${hostPart}`, true);
+        if (hostReason) return { sensitive: true, reason: `content_embedded_${hostReason}` };
+        continue; // genuinely inconclusive at the slice — defer
       }
       return { sensitive: true, reason: "content_embedded_malformed_network_path" };
     }

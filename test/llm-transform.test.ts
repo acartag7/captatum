@@ -893,6 +893,20 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     assert.equal(r.sensitive, true, "exposed password survives the slice");
     assert.equal(r.reason, "content_embedded_userinfo_credential");
   }
+  // ... and an internal host fully visible before an INVALID PORT (host
+  // evidence is conclusive even when the port breaks the parse) (codex P1)
+  {
+    const mk = (tail) => "a".repeat(500_000 - tail.length) + tail;
+    for (const ref of [" //10.0.0.5:99999", " //service.internal:99999"]) {
+      const content = mk(ref) + "path continues " + "b".repeat(500);
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, ref);
+      assert.match(r.reason ?? "", /content_embedded_/);
+    }
+    // a PUBLIC host with the same invalid port still defers (no evidence)
+    const content = mk(" //example.com:99999") + "path continues " + "b".repeat(500);
+    assert.equal(detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" }).sensitive, false);
+  }
   // ... and a username with no password still defers (a username is not a secret)
   {
     const ref = " //alice@[2606:4700::";
