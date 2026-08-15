@@ -806,6 +806,14 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "see /api/data?access_token=OPAQUETOKEN123",
     "fetch('/download?sig=abcdEFGH1234567890abcd')",
     "redirect #/cb?access_token=OPAQUE1",
+    // RFC 3986 sibling forms without a leading slash (codex P1 r2)
+    "see cb?access_token=OPAQUE1",
+    "./download?sig=abcdEFGH1234567890",
+    "../download?sig=abcdEFGH1234567890",
+    // content-leading query/fragment-only references: the ^ anchor captures no
+    // delimiter, so the literal must not lose its initial ? or #
+    "?access_token=OPAQUE2",
+    "#access_token=OPAQUE3",
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
     assert.equal(r.sensitive, true, content);

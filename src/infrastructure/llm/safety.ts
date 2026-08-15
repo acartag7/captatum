@@ -66,7 +66,7 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *  need a host). Path part bounded and optional so a bare `?access_token=…` / `#sig=…`
  *  fragment literal in prose or code still matches. Prefixed by a delimiter so ordinary
  *  prose mid-word sequences are not absorbed. Linear char classes, bounded lengths. */
-const RELATIVE_CREDENTIAL_URL_IN_CONTENT = /(?:^|[\s"'(<[=;])(\/[^\s"'<>?#]{0,256})?[?#][^\s"'<>]{0,512}/g;
+const RELATIVE_CREDENTIAL_URL_IN_CONTENT = /(?:^|[\s"'(<[=;])((?:[^\s"'<>?#]{0,256})?[?#][^\s"'<>]{0,512})/g;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -156,7 +156,10 @@ export function detectSensitiveTransformInput(input: {
   // api_key/presigned keys), NOT generic token/key/auth/expires, so ordinary
   // relative ad/tracker links in public pages stay unflagged.
   for (const match of head.matchAll(RELATIVE_CREDENTIAL_URL_IN_CONTENT)) {
-    const literal = match[0].slice(1).replace(/[.,;:!?]+$/, "");
+    // Group 1 = the relative reference WITHOUT its leading delimiter — the ^-
+    // anchored form captures no delimiter, so slicing match[0] would eat the
+    // initial ? or # and defeat both key checks (codex P1 r2).
+    const literal = (match[1] ?? "").replace(/[.,;:!?]+$/, "");
     const reason = signedUrlReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? fragmentCredentialReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };

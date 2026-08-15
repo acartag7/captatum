@@ -589,7 +589,10 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   it does not apply when the URL carries a credential anywhere (query key, fragment key, or
   userinfo `user:pass@`), so a loopback OAuth redirect (`…#access_token=…`,
   `http://client:secret@localhost…`) is still flagged.
-- RELATIVE credential URLs in content (2026-08-15 executed gap: `/cb#access_token=…`
+- RELATIVE credential URLs in content, in every RFC 3986 relative-reference form —
+  rooted (`/cb#access_token=…`), bare-segment (`cb?access_token=…`), and
+  dot-prefixed (`./download?sig=…`, `../download?sig=…`), including content-leading
+  query-only/fragment-only references (2026-08-15 executed gap: `/cb#access_token=…`
   and `/download?sig=…` egressed to a hosted LLM where the absolute spelling was
   flagged). A bounded relative-literal scan applies the same credential-key checks
   (query + fragment; a relative URL has no host, so userinfo/loopback/internal-host
