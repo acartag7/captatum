@@ -882,6 +882,21 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
   // the complete reference may be a clean public host, and rejecting the
   // artificial prefix would degrade large public pages on byte alignment (P2).
   // The head ends mid-authority; the reference completes past the cap.
+  // ... but a COMPLETE user:pass@ before the slice point is conclusive — never deferred
+  {
+    const ref = " //alice:correcthorse@[2606:4700::";
+    const content = "a".repeat(500_000 - ref.length) + ref + "1111]/rest " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true, "exposed password survives the slice");
+    assert.equal(r.reason, "content_embedded_userinfo_credential");
+  }
+  // ... and a username with no password still defers (a username is not a secret)
+  {
+    const ref = " //alice@[2606:4700::";
+    const content = "a".repeat(500_000 - ref.length) + ref + "1111] " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, false);
+  }
   {
     const content = "a".repeat(500_000 - 17) + " //[2606:4700::" + "1111]/docs and more text " + "b".repeat(1_000);
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });

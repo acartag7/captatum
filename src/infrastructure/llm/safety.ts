@@ -132,13 +132,11 @@ export function detectSensitiveTransformInput(input: {
   // `auth`/`expires`) that caused the #44 news-page false-positive regression. The credential
   // patterns above already scanned the FULL content.
   const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
-  // URL-ignored ASCII whitespace (tab, LF, CR — NOT space, which URLs encode):
-  // Node's parser strips these, so a URL line-wrapped in a terminal or log is
-  // ONE url to the browser (https://x/cb?access_\ntoken=… exposes access_token)
-  // while a whitespace-delimited scan sees a truncated key. The absolute and
-  // key scans run on the stripped text; the network-path scan keeps the RAW
-  // head — stripping newlines there would fuse adjacent references and eat
-  // their boundaries.
+  // URL-ignored ASCII whitespace (tab/LF/CR, NOT space): Node's parser strips
+  // these, so a line-wrapped URL (?access_\ntoken=…) exposes the full key to
+  // the browser while a whitespace-delimited scan sees a truncated one. The
+  // absolute and key scans run stripped; the network-path scan keeps the RAW
+  // head — stripping newlines there would fuse adjacent references.
   const unwrapped = head.replace(/[\t\n\r]/g, "");
   for (const match of unwrapped.matchAll(SIGNED_URL_IN_CONTENT)) {
     // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example — resolves
@@ -193,14 +191,21 @@ export function detectSensitiveTransformInput(input: {
       // would degrade large public pages on byte alignment alone (codex P2) —
       // same accepted-cap residual as a presigned URL past the cap. Only a
       // malformed authority fully inside the head fails closed.
-      // EXACTLY at the cap: the regex consumes only boundary+authority, never a
-      // trailing delimiter, so a match ending at head.length - 1 still has its
-      // terminator inside the head — the authority is COMPLETE and must fail
-      // closed; only a match whose last char IS the head's last char is sliced.
+      // EXACTLY at the cap (a match ending at head.length - 1 keeps its
+      // terminator inside the head — complete, fails closed); only a match whose
+      // last char IS the head's last char is genuinely sliced.
       const atHeadEdge = headTruncated
         && match.index !== undefined
         && match.index + match[0].length === head.length;
-      if (atHeadEdge) continue;
+      if (atHeadEdge) {
+        // A COMPLETE user:pass@ before the slice point is conclusive — never
+        // defer an exposed password away because the host was sliced (codex P1).
+        const atSign = authority.lastIndexOf("@");
+        if (atSign > 0 && authority.slice(0, atSign).includes(":")) {
+          return { sensitive: true, reason: "content_embedded_userinfo_credential" };
+        }
+        continue;
+      }
       return { sensitive: true, reason: "content_embedded_malformed_network_path" };
     }
     const reason = userinfoCredentialReason(url)
