@@ -589,6 +589,12 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   it does not apply when the URL carries a credential anywhere (query key, fragment key, or
   userinfo `user:pass@`), so a loopback OAuth redirect (`…#access_token=…`,
   `http://client:secret@localhost…`) is still flagged.
+- RELATIVE credential URLs in content (2026-08-15 executed gap: `/cb#access_token=…`
+  and `/download?sig=…` egressed to a hosted LLM where the absolute spelling was
+  flagged). A bounded relative-literal scan applies the same credential-key checks
+  (query + fragment; a relative URL has no host, so userinfo/loopback/internal-host
+  checks do not apply) over the same 500 KB head. The #44 ad-noise carve-out is
+  preserved: only the credential key set flags, not generic token/key/auth/expires.
 - URL-embedded credentials — a url that is itself a credential, matched on the source url AND
   any url embedded in content, in all three locations: QUERY params (cloud presigned signatures
   `x-amz-signature`/`x-amz-credential`/`x-amz-security-token`, `x-goog-signature`, Azure Blob

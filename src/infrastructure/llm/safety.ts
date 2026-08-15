@@ -58,6 +58,15 @@ const SENSITIVE_HEADER_PATTERNS = [
  *  https://files.example/a[draft?access_token=…) must not truncate the match. The IPv6 alternation
  *  owns '[' at the host position, so allowing it in a normal path is safe. Bounded vs ReDoS. */
 const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>]*)?|https?:\/\/[^\s"'<>]{1,512}/gi;
+
+/** Relative credential URLs — the absolute-literal scanner's blind spot (executed
+ *  2026-08-15): `/cb#access_token=…` and `/download?sig=…` egressed to a hosted LLM
+ *  where the absolute spelling was flagged. A relative literal has no host, so only the
+ *  QUERY/FRAGMENT credential keys apply (no userinfo/loopback/internal-host checks — those
+ *  need a host). Path part bounded and optional so a bare `?access_token=…` / `#sig=…`
+ *  fragment literal in prose or code still matches. Prefixed by a delimiter so ordinary
+ *  prose mid-word sequences are not absorbed. Linear char classes, bounded lengths. */
+const RELATIVE_CREDENTIAL_URL_IN_CONTENT = /(?:^|[\s"'(<[=;])(\/[^\s"'<>?#]{0,256})?[?#][^\s"'<>]{0,512}/g;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -137,6 +146,19 @@ export function detectSensitiveTransformInput(input: {
       ?? userinfoCredentialReason(url)
       ?? loopbackOAuthCredentialReason(url)
       ?? internalHostReason(url, true);
+    if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
+  }
+  // Relative-URL credential literals (executed gap 2026-08-15): the same credential
+  // keys, relative spelling — `/cb#access_token=…` egressed to a hosted LLM where the
+  // absolute spelling was flagged. A relative literal has no host, so only the
+  // QUERY/FRAGMENT credential-key checks apply. The #44 ad-noise carve-out is
+  // preserved: only CONTENT_CREDENTIAL_QUERY_KEYS flags (sig/signature/access_token/
+  // api_key/presigned keys), NOT generic token/key/auth/expires, so ordinary
+  // relative ad/tracker links in public pages stay unflagged.
+  for (const match of head.matchAll(RELATIVE_CREDENTIAL_URL_IN_CONTENT)) {
+    const literal = match[0].slice(1).replace(/[.,;:!?]+$/, "");
+    const reason = signedUrlReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS)
+      ?? fragmentCredentialReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
   return { sensitive: false };

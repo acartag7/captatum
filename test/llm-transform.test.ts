@@ -798,6 +798,31 @@ test("sensitive content prefers local Ollama and skips hosted provider", async (
   assert.equal(local.calls.length, 1);
 });
 
+test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absolute-only scanner gap (2026-08-15 assessment V3)", () => {
+  // Executed gap: the absolute spelling was flagged while the relative spelling
+  // egressed to a hosted LLM. Same credential keys, no host.
+  for (const content of [
+    "see /cb#access_token=OPAQUETOKEN123 in the docs",
+    "see /api/data?access_token=OPAQUETOKEN123",
+    "fetch('/download?sig=abcdEFGH1234567890abcd')",
+    "redirect #/cb?access_token=OPAQUE1",
+  ]) {
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true, content);
+    assert.match(r.reason ?? "", /content_embedded_signed_or_tokenized/);
+  }
+  // The #44 ad-noise carve-out survives: generic keys on relative URLs stay
+  // unflagged (public pages are full of /track?token=… ad links).
+  for (const content of [
+    "/track?token=xyz&expires=99",
+    "/docs/getting-started",
+    "what? access the token section",
+  ]) {
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, false, content);
+  }
+});
+
 test("detectSensitiveTransformInput flags an embedded private-IP URL (SSRF metadata)", () => {
   const r = detectSensitiveTransformInput({ content: "creds at http://169.254.169.254/latest/meta-data/iam" });
   assert.equal(r.sensitive, true);
