@@ -596,7 +596,10 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   must not egress): (1) a KEY-anchored scan — any `?`/`#`/`&` followed by
   `credential-key=value` flags, wherever the reference starts, with HTML-escaped
   separators normalized; (2) a NETWORK-PATH scan — `//authority` references carry a
-  host, so the userinfo/internal-host/loopback checks apply via a dummy scheme. The
+  host, so the userinfo/internal-host/loopback checks apply via a dummy scheme,
+  and an UNPARSEABLE authority fails CLOSED (an exposed password aimed at a
+  private host behind an invalid port must not egress because the parser gave
+  up). The
   #44 ad-noise carve-out is preserved: only the credential key set flags, never
   generic token/key/auth/expires, and a clean public `//host` reference stays
   unflagged.

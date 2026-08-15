@@ -162,8 +162,17 @@ export function detectSensitiveTransformInput(input: {
     }
   }
   // (2) network-path references: a host is present, so host-class checks apply.
+  // FAIL CLOSED on an unparseable authority (codex P1 r5): an invalid port or
+  // malformed host makes every URL-based helper throw-and-swallow, and a
+  // reference like //user:pass@10.0.0.5:99999/file — an exposed password aimed
+  // at a private host — must not egress because the parser gave up.
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
     const url = `https://${match[1]}`;
+    try {
+      new URL(url);
+    } catch {
+      return { sensitive: true, reason: "content_embedded_malformed_network_path" };
+    }
     const reason = userinfoCredentialReason(url)
       ?? loopbackOAuthCredentialReason(url)
       ?? internalHostReason(url, true);

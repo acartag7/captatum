@@ -820,6 +820,10 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//169.254.169.254/latest/meta-data",
     "//10.0.0.5/admin",
     "//cdn.example/f?sig=abcdEFGH1234567890",
+    // FAIL CLOSED on unparseable authorities: an exposed password aimed at a
+    // private host behind an invalid port must not egress (codex P1 r5)
+    "//alice:correcthorse@10.0.0.5:99999/file",
+    "//example.com:99999/x",
     // a credential after a >256-char relative path (codex P1 r3)
     `/${"x".repeat(300)}?access_token=OPAQUE4`,
     // and after a >2 048-char path — no per-reference cap may exist (codex P1 r5)
@@ -843,6 +847,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "/docs/getting-started",
     "what? access the token section",
     "//example.com/public", // network-path to a clean public host
+    "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
     assert.equal(r.sensitive, false, content);
