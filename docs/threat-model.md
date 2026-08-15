@@ -172,7 +172,15 @@ the contract reference; this file is the security reasoning.
   `<service>.<namespace>.svc.cluster.local` DNS-1123 shape; parsing and
   allowlisting happen before any hosted state side effect. The deployer owns the
   concrete Service name. Loopback CDP is rejected because it recreates the
-  shared-network-namespace attack. This
+  shared-network-namespace attack. At connect time the renderer swaps the
+  hostname for the address it resolves to (`src/infrastructure/render/cdp-connect.ts`):
+  Chromium's DevTools server rejects any request whose Host header is neither an
+  IP literal nor localhost (DNS-rebinding protection), so dialing the Service
+  DNS name through the byte-transparent relay fails with a bare 500 at
+  `/json/version` — an IP-form Host passes the check while kube-proxy still
+  routes through the same ClusterIP. The configured endpoint itself keeps the
+  validated Service shape; resolution failure fails the render (no fallback).
+  This
   prevents both packet sniffing and sibling port rebinding during a gateway restart.
   The cluster node/kernel and principals allowed to mutate the Pod, its labels,
   or ingress NetworkPolicy remain inside the operator trust boundary. Either way the

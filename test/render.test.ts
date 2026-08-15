@@ -474,16 +474,16 @@ test("renderer connects to the CDP workload and does not close its shared browse
     loadPlaywright: harness.load,
     guard: new FakeGuard({}),
     cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    cdpResolver: async () => "10.43.38.129",
   });
   const result = await renderer.render(renderInput(new FakeFetcher()));
 
-  // Workload mode: connect over CDP (not launch), and never close the long-lived
-  // shared browser — only the per-render context+page.
+  // Workload mode: connect over CDP at the RESOLVED address (Chromium's DevTools
+  // server 500s non-IP Host headers, so the Service DNS name cannot be dialed
+  // directly — see src/infrastructure/render/cdp-connect.ts), and never close
+  // the long-lived shared browser — only the per-render context+page.
   assert.equal(result.rendered, true);
-  assert.equal(
-    harness.cdpEndpoint,
-    "http://captatum-browser.captatum.svc.cluster.local:9222",
-  );
+  assert.equal(harness.cdpEndpoint, "http://10.43.38.129:9222");
   assert.equal(harness.launchCalled, false);
   assert.equal(harness.browserClosed, false);
 });

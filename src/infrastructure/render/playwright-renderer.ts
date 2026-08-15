@@ -10,7 +10,16 @@ import type {
 import { parseCdpEndpoint } from "../../config.ts";
 import { streamFromBytes } from "../http/body.ts";
 import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
+import { resolveCdpConnectUrl, type CdpHostResolver } from "./cdp-connect.ts";
 import { RenderRouteState } from "./route-state.ts";
+import {
+  capRenderedBytes,
+  closeQuietly,
+  rejectFromError,
+  RenderError,
+  serviceWorkerAction,
+  withTimeout,
+} from "./renderer-helpers.ts";
 import { liveDomTextLength, waitForBodyStable } from "./settle.ts";
 import type {
   PlaywrightBrowser,
@@ -28,6 +37,8 @@ export interface PlaywrightRendererDeps {
   guard?: BrowserUrlGuard;
   /** Allowlisted CDP endpoint for the isolated hosted browser workload. If set, the renderer connects to long-lived Chromium instead of launching one in-process. */
   cdpEndpoint?: string;
+  /** Resolves the CDP Service hostname to the IP form Chromium's DevTools Host check accepts (test-injectable). */
+  cdpResolver?: CdpHostResolver;
   /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is transitional local-only behavior. */
   chromiumSandbox?: boolean;
   /** Post-load settle: networkidle cap, content-stability min dwell, stable threshold (ms).
@@ -41,6 +52,7 @@ export class PlaywrightRenderer implements RenderPort {
   private readonly loadPlaywright: () => Promise<PlaywrightModule>;
   private readonly guard: BrowserUrlGuard;
   private readonly cdpEndpoint?: string;
+  private readonly cdpResolver?: CdpHostResolver;
   private readonly chromiumSandbox: boolean;
   private readonly settleMs: number;
   private readonly settleMinDwellMs: number;
@@ -52,6 +64,7 @@ export class PlaywrightRenderer implements RenderPort {
     this.loadPlaywright = deps.loadPlaywright ?? defaultLoadPlaywright;
     this.guard = deps.guard ?? new P1BrowserUrlGuard();
     this.cdpEndpoint = parseCdpEndpoint(deps.cdpEndpoint ?? "");
+    this.cdpResolver = deps.cdpResolver;
     this.chromiumSandbox = deps.chromiumSandbox ?? true;
     this.settleMs = deps.settleMs ?? 5000; // #110: was 3000; both waits return early when stable, so a larger cap only helps slow-hydrating SPAs (total settle bounded by render timeoutMs).
     this.settleMinDwellMs = deps.settleMinDwellMs ?? 1500;
@@ -69,7 +82,14 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        if (!this.cdpBrowser) this.cdpBrowser = await playwright.chromium.connectOverCDP(this.cdpEndpoint);
+        if (!this.cdpBrowser) {
+          // Connect over the RESOLVED address: Chromium's DevTools server 500s any
+          // request whose Host header is not an IP/localhost, so dialing the Service
+          // DNS name fails at /json/version (observed in production; see cdp-connect.ts).
+          this.cdpBrowser = await playwright.chromium.connectOverCDP(
+            await resolveCdpConnectUrl(this.cdpEndpoint, this.cdpResolver),
+          );
+        }
         browser = this.cdpBrowser;
       } else {
         browser = await playwright.chromium.launch({
@@ -191,16 +211,6 @@ function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number,
   };
 }
 
-/** UTF-8-safe truncation: cut at the largest char boundary ≤ maxBytes by walking
- *  back past trailing continuation bytes (0x80–0xBF) so the slice is always valid UTF-8. */
-function capRenderedBytes(content: string, maxBytes: number): { bytes: Uint8Array; truncated: boolean } {
-  const full = new TextEncoder().encode(content);
-  if (full.byteLength <= maxBytes) return { bytes: full, truncated: false };
-  let cut = maxBytes;
-  while (cut > 0 && (full[cut] & 0xc0) === 0x80) cut -= 1;
-  return { bytes: full.subarray(0, cut), truncated: true };
-}
-
 function renderFailure(rejected: RejectResult, actions: RenderAction[], state: RenderRouteState): RenderFailure {
   // A failed render may have fulfilled subresources before failing — carry the partial egress (codex R2 P2).
   const egressHosts = state.egressHosts();
@@ -210,39 +220,4 @@ function renderFailure(rejected: RejectResult, actions: RenderAction[], state: R
 async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
   try { return await import("playwright") as unknown as PlaywrightModule; }
   catch { throw new RenderError("render_unavailable", "Playwright is not installed"); }
-}
-
-class RenderError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "RenderError";
-    this.code = code;
-  }
-}
-
-function rejectFromError(error: unknown): RejectResult {
-  if (error instanceof RenderError) {
-    return { rejected: true, code: error.code, message: error.message };
-  }
-  if (error instanceof Error && error.message === "render_timeout") {
-    return { rejected: true, code: "timeout", message: "Render timed out" };
-  }
-  const detail = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`captatum render error: ${detail}\n`);
-  return { rejected: true, code: "render_error", message: `Tier-3 render failed: ${detail}` };
-}
-
-function serviceWorkerAction(): RenderAction { return { type: "service-workers-disabled", reason: "context serviceWorkers=block" }; }
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const timer = new Promise<T>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error("render_timeout")), timeoutMs);
-  });
-  try { return await Promise.race([promise, timer]); } finally { if (timeout) clearTimeout(timeout); }
-}
-
-async function closeQuietly(closeable: { close(): Promise<void> } | undefined): Promise<void> {
-  try { await closeable?.close(); } catch { /* best-effort cleanup */ }
 }
