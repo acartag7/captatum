@@ -75,15 +75,21 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *      legitimately precedes a reference in prose, Markdown, or code: whitespace,
  *      quotes and backticks (inline code), parens/brackets/braces/angle brackets,
  *      table pipes, emphasis (*, _, ~), blockquote '>', and the punctuation = ; , : ! ?
- *      (YAML values, list commas). Sibling-swept as a CLASS after pipes was the
- *      fifth consecutive one-character boundary finding.: ordinary doubled slashes must not match, because Node parses bare
+ *      (YAML values, list commas), plus Unicode quotes and dashes (smart quotes,
+ *      guillemets, en/em dashes). Sibling-swept as a CLASS after pipes was the
+ *      fifth consecutive one-character boundary finding. The AUTHORITY is captured
+ *      from a hostname-legality WHITELIST (letters, digits, dot, dash, colon, @,
+ *      IPv6 brackets, %) — any other character TERMINATES the reference, so
+ *      typographic punctuation and the prose following it (//10.0.0.5—then) can
+ *      never reach the classifier; Node would punycode such a tail into a
+ *      non-private hostname and the reference egressed (codex P1).: ordinary doubled slashes must not match, because Node parses bare
  *      numbers as IPv4 authorities and Python floor division (value//10) or a //
  *      inside an absolute URL's path would flag public pages (codex P1).
  * Both are linear, single-pass, bounded by the 500 KB head. The #44 ad-noise
  *  carve-out is preserved: only the credential key set flags, never generic
  *  token/key/auth/expires. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=([^\s"'<>=&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~])\/\/([^\s"'<>/?#]{1,2048})/g;
+const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([A-Za-z0-9.\-:@\[\]%]{1,2048})/g;
 
 const MAX_CONTENT_SCAN = 500_000;
 

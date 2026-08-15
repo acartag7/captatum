@@ -838,6 +838,15 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "_//10.0.0.5/admin_", // underscore emphasis
     ">//169.254.169.254/meta", // blockquote
     "see!//10.0.0.5/x",
+    // Unicode prose punctuation: Node punycodes a typographic tail into a
+    // non-private hostname, and the prose AFTER a dash joins the authority —
+    // so the authority is captured from a hostname-legality whitelist and
+    // Unicode quotes/dashes are boundaries too (codex P1)
+    "is //169.254.169.254—then read it",
+    "cfg //10.0.0.5” he said",
+    "“//10.0.0.5/admin” quoted",
+    "le lien «//internal.corp/x» ici",
+    "see //10.0.0.5–and act",
     "see (//169.254.169.254) for creds",
     "cfg //10.0.0.5:80, next",
     "//cdn.example/f?sig=abcdEFGH1234567890",
@@ -872,6 +881,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "docs //example.com, chapter 2", // punctuation on a public host stays clean too
     "see `//example.com/api` docs", // ... backtick-wrapped public host too
     "|//example.com/api|", // ... table-cell public host
+    "le lien «//example.com/api» ici", // ... guillemet-wrapped public host
     // ... and only at a reference BOUNDARY: Python floor division (value//10) and
     // a // inside an absolute URL's path are NOT authorities (Node parses bare
     // numbers as IPv4 — public pages silently degraded to raw) (codex P1)
