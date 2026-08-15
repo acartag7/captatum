@@ -823,6 +823,10 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     // as hostname chars, so the unnormalized form parsed as "10.0.0.5," and
     // egressed (codex P1)
     "cfg //10.0.0.5, then more",
+    // backtick boundaries: inline-code Markdown `//host/…` is the MOST COMMON
+    // shape in docs/logs and was unreachable (codex P1)
+    "run `//169.254.169.254/latest/meta-data` now",
+    "leaked `//alice:password@example.com/x` in logs",
     "see (//169.254.169.254) for creds",
     "cfg //10.0.0.5:80, next",
     "//cdn.example/f?sig=abcdEFGH1234567890",
@@ -855,6 +859,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//example.com/public", // network-path to a clean public host
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
     "docs //example.com, chapter 2", // punctuation on a public host stays clean too
+    "see `//example.com/api` docs", // ... backtick-wrapped public host too
     // ... and only at a reference BOUNDARY: Python floor division (value//10) and
     // a // inside an absolute URL's path are NOT authorities (Node parses bare
     // numbers as IPv4 — public pages silently degraded to raw) (codex P1)

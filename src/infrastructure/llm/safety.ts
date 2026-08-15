@@ -71,15 +71,15 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *      separators are normalized first, as the absolute scanner does.
  *  (2) NETWORK-PATH: an `//authority` reference CARRIES a host, so the host checks
  *      apply (userinfo credential, internal host, loopback) via a dummy scheme —
- *      anchored to a reference BOUNDARY (start, whitespace, quote, bracket, paren,
- *      '=', ';'): ordinary doubled slashes must not match, because Node parses bare
+ *      anchored to a reference BOUNDARY (start, whitespace, quote, backtick,
+ *      bracket, paren, '=', ';' — inline-code Markdown `//host/…` included): ordinary doubled slashes must not match, because Node parses bare
  *      numbers as IPv4 authorities and Python floor division (value//10) or a //
  *      inside an absolute URL's path would flag public pages (codex P1).
  * Both are linear, single-pass, bounded by the 500 KB head. The #44 ad-noise
  *  carve-out is preserved: only the credential key set flags, never generic
  *  token/key/auth/expires. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=([^\s"'<>=&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"'(<[=;])\/\/([^\s"'<>/?#]{1,2048})/g;
+const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<[=;])\/\/([^\s"'<>/?#]{1,2048})/g;
 
 const MAX_CONTENT_SCAN = 500_000;
 
