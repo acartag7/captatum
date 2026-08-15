@@ -458,6 +458,59 @@ test("renderer byte-cap truncation respects UTF-8 boundaries for multibyte conte
   assert.equal(Buffer.from(decoded, "utf8").toString("utf8"), decoded);
 });
 
+test("a stalled CDP DNS resolution fails within the render deadline, not never (codex P1)", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: harness.load,
+    guard: new FakeGuard({}),
+    cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    // CoreDNS unavailable: the lookup never settles.
+    cdpResolver: () => new Promise<string>(() => {}),
+  });
+  const input = renderInput(new FakeFetcher());
+  const t0 = Date.now();
+  const result = await renderer.render({ ...input, timeoutMs: 150 });
+  const elapsed = Date.now() - t0;
+  assert.equal(result.rendered, false);
+  assert.equal(result.code, "timeout");
+  assert.ok(elapsed < 5_000, `stalled resolution must be deadline-bounded, took ${elapsed}ms`);
+});
+
+test("an already-aborted bulk wall rejects the CDP connect before any browser work", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: harness.load,
+    guard: new FakeGuard({}),
+    cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    cdpResolver: () => new Promise<string>(() => {}),
+  });
+  const input = renderInput(new FakeFetcher());
+  const result = await renderer.render({ ...input, timeoutMs: 5_000, signal: AbortSignal.abort() });
+  assert.equal(result.rendered, false);
+  assert.equal(result.code, "timeout");
+});
+
+test("a CDP connect that loses the deadline race closes its late-arriving browser (codex P2 r2)", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: harness.load,
+    guard: new FakeGuard({}),
+    cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    // DNS is slow: resolution lands AFTER the render deadline loses the race.
+    cdpResolver: async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      return "10.43.38.129";
+    },
+  });
+  const input = renderInput(new FakeFetcher());
+  const result = await renderer.render({ ...input, timeoutMs: 100 });
+  assert.equal(result.rendered, false);
+  assert.equal(result.code, "timeout");
+  // the late browser must be closed, not leaked against the relay connection cap
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(harness.browserClosed, true, "late connect result must be closed");
+});
+
 test("renderer returns timeout and closes the browser on stalled navigation", async () => {
   const harness = new BrowserHarness({ neverResolve: true });
   const result = await new PlaywrightRenderer({ loadPlaywright: harness.load })
@@ -474,16 +527,16 @@ test("renderer connects to the CDP workload and does not close its shared browse
     loadPlaywright: harness.load,
     guard: new FakeGuard({}),
     cdpEndpoint: "http://captatum-browser.captatum.svc.cluster.local:9222",
+    cdpResolver: async () => "10.43.38.129",
   });
   const result = await renderer.render(renderInput(new FakeFetcher()));
 
-  // Workload mode: connect over CDP (not launch), and never close the long-lived
-  // shared browser — only the per-render context+page.
+  // Workload mode: connect over CDP at the RESOLVED address (Chromium's DevTools
+  // server 500s non-IP Host headers, so the Service DNS name cannot be dialed
+  // directly — see src/infrastructure/render/cdp-connect.ts), and never close
+  // the long-lived shared browser — only the per-render context+page.
   assert.equal(result.rendered, true);
-  assert.equal(
-    harness.cdpEndpoint,
-    "http://captatum-browser.captatum.svc.cluster.local:9222",
-  );
+  assert.equal(harness.cdpEndpoint, "http://10.43.38.129:9222");
   assert.equal(harness.launchCalled, false);
   assert.equal(harness.browserClosed, false);
 });
