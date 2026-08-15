@@ -169,3 +169,21 @@ test("results bind to (node, value) identity, not traversal position (codex P2 r
   // "x": branch 2 matches on its own result — valid.
   assert.equal((await validateJsonSchema("x", schema)).valid, true);
 });
+
+test("quantifier glyphs inside character classes are literals, not quantifiers (codex P2 r7)", async () => {
+  // ^([a-z+])+$ is LINEAR but the heuristic read the class's + as a nested
+  // quantifier and rejected it at the input boundary — locking out common
+  // allowlist-style (base64-style) patterns.
+  const normalized = normalizeCaptatumInput({
+    url: "https://public.example/",
+    output: "extract",
+    schema: { type: "string", pattern: "^([a-z+])+$" },
+  });
+  assert.equal(normalized.requestedOutput, "extract");
+  assert.equal((await validateJsonSchema("ab+c", normalized.schema)).valid, true);
+  // ... while REAL nested quantifiers and overlapping alternations are still caught
+  assert.throws(
+    () => normalizeCaptatumInput({ url: "https://public.example/", output: "extract", schema: { type: "string", pattern: "^(a+)+$" } }),
+    (error: unknown): boolean => error instanceof CaptatumInputError,
+  );
+});

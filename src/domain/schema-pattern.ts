@@ -48,10 +48,21 @@ function isLikelyCatastrophicPattern(pattern: string): boolean {
   // wrapper patterns like ((a|a))+ and ((a+))+ are caught at the outer quantifier.
   const stack: { q: boolean; u: boolean; alts: string[]; cur: string }[] = [];
   let escaped = false;
+  // Character-class state: inside [...] every glyph is a LITERAL — a *, +, ?, or
+  // { in a class must not mark the enclosing group as quantified (codex P2 r7:
+  // ^([a-z+])+$ is linear but was rejected as catastrophic, locking out common
+  // allowlist-style patterns). JS semantics: the FIRST ] closes the class.
+  let inClass = false;
   for (let index = 0; index < pattern.length; index += 1) {
     const ch = pattern[index];
     if (escaped) { escaped = false; if (stack.length > 0) stack[stack.length - 1].cur += ch; continue; }
     if (ch === "\\") { escaped = true; continue; }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      else if (stack.length > 0) stack[stack.length - 1].cur += ch;
+      continue;
+    }
+    if (ch === "[") { inClass = true; if (stack.length > 0) stack[stack.length - 1].cur += ch; continue; }
     if (ch === "(") { stack.push({ q: false, u: false, alts: [], cur: "" }); continue; }
     if (ch === "|") { if (stack.length > 0) { const g = stack[stack.length - 1]; g.alts.push(g.cur); g.cur = ""; } continue; }
     if (ch === ")" && stack.length > 0) {
