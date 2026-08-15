@@ -28,6 +28,13 @@ test("renderer launches sandboxed context with service workers and downloads dis
   assert.equal(result.rendered, true);
   assert.deepEqual(harness.launchOptions.env, {});
   assert.equal(harness.launchOptions.chromiumSandbox, true);
+  // Transport-layer egress must die at BOTH layers: non-proxied UDP forbidden
+  // (ICE/STUN probing) AND every browser TCP connection (incl. TURN) sent to a
+  // dead loopback proxy — route-fulfilled content never touches the network.
+  assert.deepEqual(harness.launchOptions.args, [
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--proxy-server=http://127.0.0.1:1",
+  ]);
   assert.deepEqual(harness.contextOptions, {
     serviceWorkers: "block",
     acceptDownloads: false,

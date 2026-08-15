@@ -86,6 +86,18 @@ describe("Tier-3 popup egress (real Chromium)", { skip: !chromiumReady }, () => 
     // let any late popup sub-fetch settle before judging
     await new Promise((r) => setTimeout(r, 1500));
 
+    if (calls.length === 0) {
+      // CI-only failure diagnosis (passes locally deterministically): dump
+      // everything the renderer observed so the log shows WHY interception
+      // never ran — render outcome, code/message, and the action log.
+      console.error("POPUP-EGRESS DIAGNOSIS:", JSON.stringify({
+        rendered: out.rendered,
+        code: out.code,
+        message: out.message?.slice(0, 300),
+        actions: (out.actions ?? []).slice(0, 8),
+        calls,
+      }));
+    }
     assert.ok(calls.length > 0, "instrumented fetcher must have fired (main navigation)");
     const escaped = hits.slice(baseline);
     assert.deepEqual(

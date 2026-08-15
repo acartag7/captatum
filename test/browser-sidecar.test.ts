@@ -22,6 +22,9 @@ test("browser launcher binds only loopback", () => {
     // interception, and the browser pod's netns firewall should not be the only
     // layer that stops it (it is absent in the local in-process flavor).
     assert.match(result.stdout, /--force-webrtc-ip-handling-policy=disable_non_proxied_udp/);
+    // TURN-over-TCP would still egress with only the UDP policy — route browser
+    // TCP through a dead loopback proxy (route-fulfilled content needs no network).
+    assert.match(result.stdout, /--proxy-server=http:\/\/127\.0\.0\.1:1/);
   }
 });
 

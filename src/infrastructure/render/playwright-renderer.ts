@@ -129,13 +129,19 @@ export class PlaywrightRenderer implements RenderPort {
           headless: true,
           chromiumSandbox: this.chromiumSandbox,
           env: {},
-          // Transport-layer egress page.route cannot see: WebRTC ICE/STUN sends
-          // UDP from the browser's network position regardless of request
-          // interception. Forbid non-proxied UDP so ICE cannot probe or
-          // exfiltrate below the fetch guard (the hosted browser pod's netns
-          // firewall already blocks this; the local in-process flavor has no
-          // such firewall, so the flag is load-bearing there).
-          args: ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
+          // Transport-layer egress page.route cannot see, killed at BOTH layers:
+          // (1) WebRTC ICE/STUN over UDP — forbidden via the IP-handling policy
+          // (the hosted browser pod's netns firewall also blocks this; the local
+          // in-process flavor has no firewall, so the flag is load-bearing
+          // there); (2) WebRTC TURN over TCP (codex P1 r4: disable_non_proxied_udp
+          // still permits direct TCP to an attacker-chosen TURN server) — a dead
+          // loopback proxy sends every browser-originated TCP connection,
+          // TURN included, to a refusing socket. Route-fulfilled content never
+          // touches the network, so rendering is unaffected.
+          args: [
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--proxy-server=http://127.0.0.1:1",
+          ],
         });
         ownsBrowser = true;
       }
