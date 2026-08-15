@@ -13,7 +13,7 @@ import { detectSensitiveTransformInput } from "../src/infrastructure/llm/safety.
 import type { LlmGenerateInput, LlmGenerateResult, LlmModelCandidate, LlmProvider } from "../src/infrastructure/llm/types.ts";
 import { buildMessages, FRONTLOAD_ON_TRUNCATION } from "../src/infrastructure/llm/prompts.ts";
 
-test("#155: summary instruction front-loads on truncation without weakening the enumeration rule", () => {
+test("#155: summary instruction front-loads on truncation without weakening the enumeration rule", async () => {
   // The summary prompt is 100% caller-controlled; captatum adds no field-ordering guidance of
   // its own, so on a capped (transform_truncated) summary the model writes in document order and
   // the tail fields (e.g. red flags / verdict on a due-diligence prompt) are the ones cut. The
@@ -223,7 +223,7 @@ test("output extract rejects an unsupported keyword nested in anyOf/oneOf/not at
   }
 });
 
-test("JSON schema validator enforces common requested constraints", () => {
+test("JSON schema validator enforces common requested constraints", async () => {
   const cases: Array<{ value: unknown; schema: unknown; message: string }> = [
     {
       value: { slug: "Bad Slug!" },
@@ -248,7 +248,7 @@ test("JSON schema validator enforces common requested constraints", () => {
   ];
 
   for (const { value, schema, message } of cases) {
-    assert.deepEqual(validateJsonSchema(value, schema), { valid: false, message });
+    assert.deepEqual(await validateJsonSchema(value, schema), { valid: false, message });
   }
 });
 
@@ -448,7 +448,7 @@ test("router fallback surfaces fallbackFrom on the transform info", async () => 
   assert.equal(result.result, "Real summary produced by the fallback model.");
 });
 
-test("#48 C (sticky): transient hard failures do NOT demote; sustained failure does (#82)", () => {
+test("#48 C (sticky): transient hard failures do NOT demote; sustained failure does (#82)", async () => {
   const router = new ModelRouter([
     candidate("openrouter", "deepseek/deepseek-v4-flash", { order: 0 }),
     candidate("openrouter", "qwen/qwen3.6-flash", { order: 1 }),
@@ -570,7 +570,7 @@ test("#125 codex P2: an explicit caller budget is a hard ceiling — truncation 
   assert.equal(calls[0]?.maxOutputTokens, 50, "the caller's explicit budget is honored");
 });
 
-test("#125 codex P2: fits() reserves the requested cap, not the model max (long page fits at default budget)", () => {
+test("#125 codex P2: fits() reserves the requested cap, not the model max (long page fits at default budget)", async () => {
   // qwen: 128K context, 65K max output. A 100K-token page with a default 8K budget
   // fits (100K + 8K = 108K < 128K), but would NOT fit if the bare 65K max were reserved.
   const router = new ModelRouter([candidate("openrouter", "qwen/qwen3.6-flash", { contextTokens: 128_000, maxOutputTokens: 65_536 })]);
@@ -682,7 +682,7 @@ test("#131: a hard-fail followed by a truncation returns the truncated best via 
   assert.match(result.info.fallbackFrom ?? "", /m0/, "m0 was tried + failed first");
 });
 
-test("router feedback demotes flaky free model before local fallback", () => {
+test("router feedback demotes flaky free model before local fallback", async () => {
   const router = new ModelRouter([
     candidate("openrouter", "free/model", { free: true }),
     candidate("openrouter", "cheap/model", { free: false, costWeight: 0.12 }),
@@ -798,12 +798,12 @@ test("sensitive content prefers local Ollama and skips hosted provider", async (
   assert.equal(local.calls.length, 1);
 });
 
-test("detectSensitiveTransformInput flags an embedded private-IP URL (SSRF metadata)", () => {
+test("detectSensitiveTransformInput flags an embedded private-IP URL (SSRF metadata)", async () => {
   const r = detectSensitiveTransformInput({ content: "creds at http://169.254.169.254/latest/meta-data/iam" });
   assert.equal(r.sensitive, true);
 });
 
-test("detectSensitiveTransformInput flags embedded cloud-presigned URLs (S3/GCS signing keys)", () => {
+test("detectSensitiveTransformInput flags embedded cloud-presigned URLs (S3/GCS signing keys)", async () => {
   const s3 = detectSensitiveTransformInput({ content: "get it https://bucket.s3.amazonaws.com/f.pdf?X-Amz-Signature=abc123&X-Amz-Credential=KEY/20260101" });
   assert.equal(s3.sensitive, true);
   assert.match(s3.reason ?? "", /content_embedded_.*signed_or_tokenized/);
@@ -811,7 +811,7 @@ test("detectSensitiveTransformInput flags embedded cloud-presigned URLs (S3/GCS 
   assert.equal(gcs.sensitive, true);
 });
 
-test("detectSensitiveTransformInput does NOT flag ad/CDN URLs with generic signing keys (news-page regression #44)", () => {
+test("detectSensitiveTransformInput does NOT flag ad/CDN URLs with generic signing keys (news-page regression #44)", async () => {
   // estadao.com.br-style ad tracker carrying generic ?token=/?key= — not credentials.
   const ad = detectSensitiveTransformInput({ content: "Continue lendo https://ad.doubleclick.net/ddm/track/?token=AfKj9x&key=12345 corpo do artigo." });
   assert.equal(ad.sensitive, false);
@@ -823,7 +823,7 @@ test("detectSensitiveTransformInput does NOT flag ad/CDN URLs with generic signi
   assert.equal(sha1.sensitive, false);
 });
 
-test("detectSensitiveTransformInput flags embedded cloud/OAuth signed URLs — Azure SAS ?sig=, ?access_token=, ?signature= (#44 egress-hole fix)", () => {
+test("detectSensitiveTransformInput flags embedded cloud/OAuth signed URLs — Azure SAS ?sig=, ?access_token=, ?signature= (#44 egress-hole fix)", async () => {
   // Azure Blob SAS signed with ?sig= — a real bearer credential. OLD #44 code let
   // it egress; the content scan must catch it.
   const azure = detectSensitiveTransformInput({ content: "Report https://acme.blob.core.windows.net/r/s.pdf?sv=2023-01-01&sr=b&sig=abcdEF1234567890ABcdEF1234567890ABcdEF1234567%3D&se=2027-01-01&sp=r" });
@@ -835,18 +835,18 @@ test("detectSensitiveTransformInput flags embedded cloud/OAuth signed URLs — A
   assert.equal(jws.sensitive, true);
 });
 
-test("detectSensitiveTransformInput does NOT fail-closed on a large public page with no credentials", () => {
+test("detectSensitiveTransformInput does NOT fail-closed on a large public page with no credentials", async () => {
   const r = detectSensitiveTransformInput({ content: "x".repeat(600_000) });
   assert.equal(r.sensitive, false);
 });
 
-test("a signed/tokenized SOURCE url is flagged even with generic keys (source keeps all keys)", () => {
+test("a signed/tokenized SOURCE url is flagged even with generic keys (source keeps all keys)", async () => {
   const r = detectSensitiveTransformInput({ content: "plain body", sourceUrl: "https://app.example.com/file?token=abc&sig=def" });
   assert.equal(r.sensitive, true);
   assert.match(r.reason ?? "", /signed_or_tokenized_url/);
 });
 
-test("long URL path segments (news-article slugs, opaque IDs) are NOT flagged — path-token heuristic removed (#44)", () => {
+test("long URL path segments (news-article slugs, opaque IDs) are NOT flagged — path-token heuristic removed (#44)", async () => {
   // The path-segment token heuristic was removed: no length/alphabet rule can
   // separate a real opaque token from a long news-article slug, so it caused a
   // deterministic false-positive on every article with a long slug (the source URL
@@ -866,13 +866,13 @@ test("long URL path segments (news-article slugs, opaque IDs) are NOT flagged �
   assert.equal(jwt.sensitive, true);
 });
 
-test("header dumps match any case (codex SF-1) — lowercase/all-caps Authorization/Set-Cookie", () => {
+test("header dumps match any case (codex SF-1) — lowercase/all-caps Authorization/Set-Cookie", async () => {
   assert.equal(detectSensitiveTransformInput({ content: "authorization: bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig1234567890abcdef" }).sensitive, true);
   assert.equal(detectSensitiveTransformInput({ content: "AUTHORIZATION: BASIC Zm9vOmJhcg==12345678" }).sensitive, true);
   assert.equal(detectSensitiveTransformInput({ content: "set-cookie: session=abcdefghijklmnopqrstuvwxyz123456" }).sensitive, true);
 });
 
-test("cloud env-var secret assignments are flagged, but discussion text is not (codex SF-2)", () => {
+test("cloud env-var secret assignments are flagged, but discussion text is not (codex SF-2)", async () => {
   assert.equal(detectSensitiveTransformInput({ content: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" }).sensitive, true);
   assert.equal(detectSensitiveTransformInput({ content: `AWS_SESSION_TOKEN=${"A".repeat(80)}` }).sensitive, true);
   assert.equal(detectSensitiveTransformInput({ content: "AZURE_CLIENT_SECRET=aB3dE6fH9jaB3dE6fH9jaB3dE6fH9jaB3dE6fH9j" }).sensitive, true);
@@ -880,13 +880,13 @@ test("cloud env-var secret assignments are flagged, but discussion text is not (
   assert.equal(detectSensitiveTransformInput({ content: "Set AWS_SECRET_ACCESS_KEY to your 40-character secret in the console." }).sensitive, false);
 });
 
-test("HTML-escaped &amp; signed-URL separators are normalized before the key check (codex SF-3)", () => {
+test("HTML-escaped &amp; signed-URL separators are normalized before the key check (codex SF-3)", async () => {
   const escaped = detectSensitiveTransformInput({ content: "get https://bucket.s3.amazonaws.com/f.pdf?&amp;X-Amz-Credential=AKIA/2026&amp;X-Amz-Signature=abcdef0123456789" });
   assert.equal(escaped.sensitive, true);
   assert.match(escaped.reason ?? "", /content_embedded_.*signed_or_tokenized/);
 });
 
-test("a JWT present only in the source url is flagged (codex P2 on #47)", () => {
+test("a JWT present only in the source url is flagged (codex P2 on #47)", async () => {
   // With the path-token heuristic removed (#47), a credential VALUE sitting only in
   // the source url (not echoed in the body) must still be caught.
   const r = detectSensitiveTransformInput({ content: "plain body, no credential", sourceUrl: "https://files.example.com/d/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig12345678" });
@@ -894,7 +894,7 @@ test("a JWT present only in the source url is flagged (codex P2 on #47)", () => 
   assert.equal(r.reason, "source_credential_signal");
 });
 
-test("detectSensitiveTransformInput: a plain loopback URL in CONTENT (a docs example) is NOT flagged (#127 0.11.3)", () => {
+test("detectSensitiveTransformInput: a plain loopback URL in CONTENT (a docs example) is NOT flagged (#127 0.11.3)", async () => {
   // A loopback host (localhost / 127.x / [::1]) in fetched content resolves to the reader's
   // machine, not a leaked endpoint — must not degrade summary to raw. A NON-loopback ?code= is a
   // coupon, not an OAuth code (code is treated as a credential only on loopback redirects).
@@ -906,7 +906,7 @@ test("detectSensitiveTransformInput: a plain loopback URL in CONTENT (a docs exa
   assert.equal(detectSensitiveTransformInput({ content: "git clone https://octocat@github.com/octocat/Hello-World.git" }).sensitive, false, "username-only userinfo (no password) is NOT flagged");
 });
 
-test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-bearing URLs are still flagged (#127 0.11.3)", () => {
+test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-bearing URLs are still flagged (#127 0.11.3)", async () => {
   // The loopback exemption is content-only AND plain-loopback-only: internal hosts (incl. IPv6),
   // a credential anywhere (query / fragment / userinfo), and OAuth code/refresh_token on loopback.
   assert.equal(detectSensitiveTransformInput({ content: "plain body", sourceUrl: "http://localhost:8000/x" }).sensitive, true, "loopback source url (SSRF)");
@@ -939,7 +939,7 @@ test("detectSensitiveTransformInput: internal hosts (incl. IPv6) and credential-
   assert.equal(detectSensitiveTransformInput({ content: "debug http://[fe80::1%25eth0.100]:8080/admin" }).sensitive, true, "zone id with '.' (RFC6874) is fully stripped (codex P2)");
 });
 
-test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", () => {
+test("noneReason: zero candidates reports 'unconfigured' even when the sensitive gate fired (#127 0.11.3)", async () => {
   // The local binary builds the router with zero candidates; when the sensitive gate also
   // fires (localOnly), noneReason used to mis-attribute 'sensitive_content_no_local_provider'.
   // Order is now configuredCount===0 first.

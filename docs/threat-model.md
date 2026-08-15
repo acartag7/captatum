@@ -306,7 +306,15 @@ the contract reference; this file is the security reasoning.
   every remaining keyword Captatum cannot verify (`format`, `contentEncoding`, invalid recovered
   values, and all non-allowlisted tool keys). Allowlist, not blocklist (house rule). The offending
   key AND each property-name path segment are length-capped before they enter the error message, and
-  **no schema value is ever echoed**. The same recovery runs once on `captatum_bulk`'s uniform schema;
+  **no schema value is ever echoed**. Pattern **execution** is wall-clock-bounded (worker thread, fail-closed on
+timeout): the heuristic compares raw branch text and cannot see semantic
+overlap between escape/class forms — `(\s|\x20)+` passes it and backtracks
+exponentially in V8 (executed 2026-08-15: 9.2 s on a 28-char value, a
+synchronous event-loop stall the admission cap cannot bound; the 8 KiB value
+cap bounds input LENGTH, not match TIME). The input boundary additionally
+rejects pattern CONTENT (oversized/heuristic-flagged/invalid/non-string)
+pre-fetch, so a deterministically-unusable pattern never bills a fetch+LLM.
+The same recovery runs once on `captatum_bulk`'s uniform schema;
   its warning is call-level and not duplicated per seed. A defense-in-depth copy remains at the transform seam (`finalize`) — dead in the production call
   graph (normalize always runs first), retained only for a hypothetical direct-`TransformPort`
   caller. **Depth:** the recursive walk carries an explicit `MAX_SCHEMA_DEPTH = 64` and fails

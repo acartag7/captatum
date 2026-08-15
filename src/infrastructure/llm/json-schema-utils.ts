@@ -44,81 +44,11 @@ export function nonNegativeInteger(
     : invalid(`${path} schema ${key} must be a non-negative integer`);
 }
 
-const MAX_PATTERN_LENGTH = 128;
-
-export function toRegExp(pattern: string, path: string): SchemaValidationResult & { value: RegExp } {
-  if (pattern.length > MAX_PATTERN_LENGTH) {
-    return { valid: false, unsupported: true, message: `${path} schema pattern is too long (>${MAX_PATTERN_LENGTH} chars)`, value: /$./ };
-  }
-  if (isLikelyCatastrophicPattern(pattern)) {
-    return { valid: false, unsupported: true, message: `${path} schema pattern may cause catastrophic backtracking`, value: /$./ };
-  }
-  try {
-    return { valid: true, value: new RegExp(pattern) };
-  } catch {
-    return { valid: false, message: `${path} schema pattern is invalid`, value: /$./ };
-  }
-}
-
-/**
- * Reject the classic ReDoS shapes (TRANSFORM-2/REDOS-5): a quantified group that
- * itself contains a quantifier — (a+)+, (a*)*, (a?)+ — AND a quantified group
- * with a duplicate alternative — (a|a)+ — where both branches match the same
- * input so the quantifier backtracks exponentially. Heuristic; RE2/timeout is
- * the bulletproof follow-up. Returns true (unsafe) on either construct.
- */
-function isLikelyCatastrophicPattern(pattern: string): boolean {
-  const isQuantifier = (ch: string | undefined): boolean =>
-    ch === "*" || ch === "+" || ch === "?" || ch === "{";
-  // Per open group: q = contains a quantifier (incl. a quantified child); u = contains
-  // overlapping alternation or an unsafe child. Danger propagates to enclosing groups so
-  // wrapper patterns like ((a|a))+ and ((a+))+ are caught at the outer quantifier.
-  const stack: { q: boolean; u: boolean; alts: string[]; cur: string }[] = [];
-  let escaped = false;
-  for (let index = 0; index < pattern.length; index += 1) {
-    const ch = pattern[index];
-    if (escaped) { escaped = false; if (stack.length > 0) stack[stack.length - 1].cur += ch; continue; }
-    if (ch === "\\") { escaped = true; continue; }
-    if (ch === "(") { stack.push({ q: false, u: false, alts: [], cur: "" }); continue; }
-    if (ch === "|") { if (stack.length > 0) { const g = stack[stack.length - 1]; g.alts.push(g.cur); g.cur = ""; } continue; }
-    if (ch === ")" && stack.length > 0) {
-      const g = stack.pop()!;
-      g.alts.push(g.cur);
-      const groupQuantified = isQuantifier(pattern[index + 1]);
-      const danger = g.q || g.u || hasOverlappingAlternation(g.alts);
-      if (groupQuantified && danger) return true;
-      if (stack.length > 0) {
-        const parent = stack[stack.length - 1];
-        if (g.q || groupQuantified) parent.q = true;
-        if (g.u || hasOverlappingAlternation(g.alts)) parent.u = true;
-      }
-      continue;
-    }
-    if (isQuantifier(ch) && stack.length > 0) { stack[stack.length - 1].q = true; continue; }
-    if (stack.length > 0) stack[stack.length - 1].cur += ch;
-  }
-  return false;
-}
-
-/** Overlapping alternation in a quantified group: a duplicate alternative
- * ((a|a)+) OR two alternatives where one is a string-prefix of the other
- * ((a|aa)+, (a|ab)+, (\d+|\d)+) — distinct branches that can both match the same
- * input, so the quantifier backtracks catastrophically. Disjoint prefixes like
- * (a|b)+ are safe. Approximate on alternatives containing nested groups/escapes
- * (the raw branch text is compared), which is conservative — fail-closed. */
-function hasOverlappingAlternation(alts: string[]): boolean {
-  const compact = alts.filter((a) => a.length > 0);
-  if (compact.length !== new Set(compact).size) return true; // exact duplicate
-  for (let i = 0; i < compact.length; i += 1) {
-    for (let j = i + 1; j < compact.length; j += 1) {
-      const a = compact[i];
-      const b = compact[j];
-      if (a.startsWith(b) || b.startsWith(a)) return true; // prefix overlap
-    }
-  }
-  return false;
-}
-
+// Pattern policy (length cap + catastrophic-shape heuristic + compile) lives in
+// domain/schema-pattern.ts so the INPUT boundary and this validator share one
+// source of truth. Re-exported here for existing importers.
+export { toRegExp, MAX_PATTERN_LENGTH } from "../../domain/schema-pattern.ts";
+import { SUPPORTED_SCHEMA_KEYS, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
 export function matchesType(value: unknown, type: string): boolean {
   if (type === "array") return Array.isArray(value);
   if (type === "integer") return Number.isInteger(value);
@@ -185,4 +115,69 @@ export function hasDuplicate(values: unknown[]): boolean {
 export function isMultipleOf(value: number, divisor: number): boolean {
   const quotient = value / divisor;
   return Math.abs(quotient - Math.round(quotient)) < Number.EPSILON * 100;
+}
+
+export function validateSupported(schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  const unsupportedKey = Object.keys(schema).find((key) => !SUPPORTED_SCHEMA_KEYS.has(key));
+  return unsupportedKey ? unsupported(messageForUnsupportedKeyword(unsupportedKey, path)) : ok();
+}
+
+export function validateEnum(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  if ("const" in schema && !deepEqual(value, schema.const)) return invalid(`${path} must equal schema const`);
+  if (!("enum" in schema)) return ok();
+  if (!Array.isArray(schema.enum)) return invalid(`${path} schema enum must be an array`);
+  return schema.enum.some((candidate) => deepEqual(value, candidate))
+    ? ok()
+    : invalid(`${path} must be one of schema enum values`);
+}
+
+export function validateType(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  if (!("type" in schema)) return ok();
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (!types.every((type) => typeof type === "string" && JSON_TYPES.has(type))) {
+    return invalid(`${path} schema type must be a JSON Schema type`);
+  }
+  return types.some((type) => matchesType(value, String(type)))
+    ? ok()
+    : invalid(`${path} must be ${types.join(" or ")}`);
+}
+
+const JSON_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
+
+export function parseJsonResult(text: string): unknown {
+  const trimmed = stripJsonFence(text.trim());
+  return JSON.parse(trimmed) as unknown;
+}
+
+export function validateNumber(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  for (const key of ["minimum", "maximum", "multipleOf"] as const) {
+    if (key in schema && !finiteNumber(schema[key])) return invalid(`${path} schema ${key} must be a finite number`);
+  }
+  for (const key of ["exclusiveMinimum", "exclusiveMaximum"] as const) {
+    if (key in schema && typeof schema[key] !== "number" && typeof schema[key] !== "boolean") {
+      return invalid(`${path} schema ${key} must be a number or boolean`);
+    }
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) return ok();
+  if (typeof schema.minimum === "number" && value < schema.minimum) return invalid(`${path} must be >= ${schema.minimum}`);
+  if (typeof schema.maximum === "number" && value > schema.maximum) return invalid(`${path} must be <= ${schema.maximum}`);
+  if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) {
+    return invalid(`${path} must be > ${schema.exclusiveMinimum}`);
+  }
+  if (schema.exclusiveMinimum === true && typeof schema.minimum === "number" && value <= schema.minimum) {
+    return invalid(`${path} must be > ${schema.minimum}`);
+  }
+  if (typeof schema.exclusiveMaximum === "number" && value >= schema.exclusiveMaximum) {
+    return invalid(`${path} must be < ${schema.exclusiveMaximum}`);
+  }
+  if (schema.exclusiveMaximum === true && typeof schema.maximum === "number" && value >= schema.maximum) {
+    return invalid(`${path} must be < ${schema.maximum}`);
+  }
+  if (typeof schema.multipleOf === "number" && schema.multipleOf <= 0) {
+    return invalid(`${path} schema multipleOf must be greater than 0`);
+  }
+  if (typeof schema.multipleOf === "number" && !isMultipleOf(value, schema.multipleOf)) {
+    return invalid(`${path} must be a multiple of ${schema.multipleOf}`);
+  }
+  return ok();
 }

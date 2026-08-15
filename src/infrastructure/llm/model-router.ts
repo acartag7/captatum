@@ -192,7 +192,7 @@ export class LlmTransformer implements TransformPort {
 
       let finalized;
       try {
-        finalized = finalize(input, generated.text, pick.model, this.router, generated.outTokens);
+        finalized = await finalize(input, generated.text, pick.model, this.router, generated.outTokens);
       } catch (error) {
         // finalize threw (e.g. extract_invalid_json) AFTER billing — re-throw with accumulated cost.
         throw new TransformError(

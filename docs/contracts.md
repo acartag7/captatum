@@ -1027,7 +1027,12 @@ advisory** entry inside a *successful* `Result.errors` (a mid-read truncation wi
 partial bytes). (`max_bytes` — Tier-1/Tier-3 cap — and `extract_schema_invalid` —
 transform/extract — are non-fatal advisories only; they never hard-reject a fetch.) Input
 validation also hard-rejects, before any egress, as JSON-RPC `InvalidParams`
-rather than a guarded-fetch receipt: `extract_schema_unsupported_keyword` for an
+`extract_schema_invalid_pattern` for a `pattern` whose content captatum cannot
+safely execute (oversized >128 chars, a likely-catastrophic backtracking shape,
+syntactically invalid, or non-string — checked at the same input boundary so
+no fetch/LLM spend happens first; pattern EXECUTION against model output is
+wall-clock-bounded on a worker thread and fails closed on timeout),
+`extract_schema_unsupported_keyword` for an
 `output:"extract"` schema using a keyword the validator cannot verify after the six recoverable
 root-level Captatum knobs are extracted and warned (`schema_knob_extracted`; allowlist fail-closed;
 distinct from the advisory `extract_schema_invalid`; applies to `captatum_bulk`'s uniform
@@ -1060,7 +1065,11 @@ not a tool-level error — partial failure is normal): `bulk_per_host_cap`,
 `tier2_board_not_supported_in_bulk`, `ashby_embed_not_supported_in_bulk`,
 `bulk_deadline_exceeded`, `bulk_budget_exceeded`. Tool-level errors for bulk are
 limited to input validation (`invalid_input` / `invalid_url` / `bulk_urls_empty` /
-`too_many_urls` / `extract_schema_unsupported_keyword` / `extract_schema_too_deep` / `extract_schema_tuple_unsupported` for an unsupported-after-recovery, too-deep, or tuple-form extract schema), auth, admission `OverloadedError` (`-32050`),
+`too_many_urls` / `extract_schema_unsupported_keyword` / `extract_schema_too_deep` /
+`extract_schema_tuple_unsupported` / `extract_schema_invalid_pattern` — for an
+unsupported-after-recovery, too-deep, tuple-form, or unsafely-executable
+(invalid/heuristic-flagged/oversized `pattern` content) extract schema), auth,
+admission `OverloadedError` (`-32050`),
 `bulk_quota_exceeded` (retryable), and `bulk_quota_store_error` (fail-closed).
 `bulk_render_cap_exceeded` and `bulk_retried_429` are per-seed WARNINGS (the seed
 runs degraded), not fail codes.
