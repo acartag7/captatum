@@ -66,7 +66,7 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *  need a host). Path part bounded and optional so a bare `?access_token=…` / `#sig=…`
  *  fragment literal in prose or code still matches. Prefixed by a delimiter so ordinary
  *  prose mid-word sequences are not absorbed. Linear char classes, bounded lengths. */
-const RELATIVE_CREDENTIAL_URL_IN_CONTENT = /(?:^|[\s"'(<[=;])((?:[^\s"'<>?#]{0,256})?[?#][^\s"'<>]{0,512})/g;
+const RELATIVE_CREDENTIAL_URL_IN_CONTENT = /(?:^|[\s"'(<[=;])(\/\/[^\s"'<>]{1,512}|(?:[^\s"'<>?#]{0,2048})?[?#][^\s"'<>]{0,512})/g;
 /** Cap the embedded-URL scan to the head of the content. The high-confidence
  *  credential/header patterns below scan the FULL content regardless of size;
  *  only the URL-embedding scan is bounded (ReDoS/DoS hygiene). A public page is
@@ -160,6 +160,21 @@ export function detectSensitiveTransformInput(input: {
     // anchored form captures no delimiter, so slicing match[0] would eat the
     // initial ? or # and defeat both key checks (codex P1 r2).
     const literal = (match[1] ?? "").replace(/[.,;:!?]+$/, "");
+    if (literal.startsWith("//")) {
+      // RFC 3986 network-path reference: it CARRIES an authority, so the full
+      // absolute-URL check chain applies (userinfo credential, internal host,
+      // query/fragment keys) — parse it with a dummy scheme. Without this,
+      // //user:pass@host or //169.254.169.254/... egressed where the https://
+      // spelling was flagged (codex P1 r3).
+      const url = `https:${literal}`;
+      const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
+        ?? fragmentCredentialReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
+        ?? userinfoCredentialReason(url)
+        ?? loopbackOAuthCredentialReason(url)
+        ?? internalHostReason(url, true);
+      if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
+      continue;
+    }
     const reason = signedUrlReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? fragmentCredentialReason(literal, CONTENT_CREDENTIAL_QUERY_KEYS);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };

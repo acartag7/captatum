@@ -814,10 +814,18 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     // delimiter, so the literal must not lose its initial ? or #
     "?access_token=OPAQUE2",
     "#access_token=OPAQUE3",
+    // network-path (//authority) references carry a HOST — the full absolute
+    // chain applies (userinfo / internal host / query keys) (codex P1 r3)
+    "//alice:correcthorse@example.com/file",
+    "//169.254.169.254/latest/meta-data",
+    "//10.0.0.5/admin",
+    "//cdn.example/f?sig=abcdEFGH1234567890",
+    // a credential after a >256-char relative path (codex P1 r3)
+    `/${"x".repeat(300)}?access_token=OPAQUE4`,
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
     assert.equal(r.sensitive, true, content);
-    assert.match(r.reason ?? "", /content_embedded_signed_or_tokenized/);
+    assert.match(r.reason ?? "", /content_embedded_/, `${content} -> ${r.reason}`);
   }
   // The #44 ad-noise carve-out survives: generic keys on relative URLs stay
   // unflagged (public pages are full of /track?token=… ad links).
@@ -825,6 +833,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "/track?token=xyz&expires=99",
     "/docs/getting-started",
     "what? access the token section",
+    "//example.com/public", // network-path to a clean public host
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
     assert.equal(r.sensitive, false, content);
