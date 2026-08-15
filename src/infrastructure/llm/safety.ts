@@ -60,7 +60,7 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *  other character terminates it. #44 carve-out holds: generic keys and clean
  *  public //hosts never flag. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=([^\s"'<>&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([A-Za-z0-9.\-:@\[\]%]{1,2048})/g;
+const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([A-Za-z0-9.\-:@\[\]%\u3002\uFF0E\uFF61]{1,2048})/g;
 
 const MAX_CONTENT_SCAN = 500_000;
 
@@ -145,7 +145,10 @@ export function detectSensitiveTransformInput(input: {
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
     // Hostname-whitelist capture; NO punctuation trim (trimming ':' would
     // rescue a malformed empty/double-colon port).
-    const authority = match[1] ?? "";
+    // WHATWG dot variants (U+3002 ideographic full stop, U+FF0E fullwidth,
+    //  U+FF61 halfwidth) are hostname DOT separators to Node — normalize them
+    // to ASCII before any classification (codex P1).
+    const authority = (match[1] ?? "").replace(/[\u3002\uFF0E\uFF61]/g, ".");
     const atEdge = headTruncated
       && match.index !== undefined
       && match.index + match[0].length === head.length;

@@ -896,6 +896,8 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
       " //10.0.0.5:99999", // TERMINATED by the port separator
       " //service.internal:99999", // terminated; .internal suffix
       " //[fd12::1", " //[fd00:", " //[fe80:", // hex prefix cannot escape ULA/LL
+      " //service\u3002internal:99999", " //service\uFF0Einternal:99999", // WHATWG dot variants
+      " //10\u30020\u30020\u30025:99999", // v4 with ideographic dots
     ];
     for (const tail of flagged) {
       const r = detectSensitiveTransformInput({ content: mk(tail) + beyond, sourceUrl: "https://public.example/a" });
@@ -908,6 +910,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
       " //10.0.0.5", " //service.internal", // unterminated complete-looking hosts
       " //127.0.0.1:99999", // loopback: the #127 content exemption
       " //alice@10.0.0.5", // username not a secret, host unterminated
+      " //example\u3002com", // public host with a dot variant
     ];
     for (const tail of deferred) {
       const r = detectSensitiveTransformInput({ content: mk(tail) + beyond, sourceUrl: "https://public.example/a" });
