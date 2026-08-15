@@ -23,15 +23,21 @@ export function parseJsonResult(text: string): unknown {
  *  REAL answer exactly where the composite makes its decision. A result missing
  *  from the map (budget exhausted, worker failure) fails CLOSED. */
 interface PatternPass {
-  tests: Array<PatternTest & { key: string }>;
-  results?: Map<string, boolean>;
+  /** Pattern encounters, in deterministic walk order (the collect and check
+   *  passes replay the identical pure walk, so encounter #N is the same test
+   *  in both). */
+  tests: PatternTest[];
+  /** Check pass only: worker result per encounter index. Absent = fail closed. */
+  results?: boolean[];
+  /** Encounters so far in this pass (allocate the next test id). */
+  cursor: number;
 }
 
 export async function validateJsonSchema(value: unknown, schema: unknown): Promise<SchemaValidationResult> {
   if (schema === undefined || schema === true) return ok();
   if (schema === false) return invalid("$ is not allowed by false schema");
   if (!isRecord(schema)) return invalid("schema must be an object or boolean");
-  const collect: PatternPass = { tests: [] };
+  const collect: PatternPass = { tests: [], cursor: 0 };
   // Collect pass — RESULT DISCARDED: with patterns unresolved there is no sound
   // default (deferred-true breaks `not`; deferred-false breaks anyOf), so this
   // walk exists ONLY to gather the pattern tests. The check pass below is the
@@ -39,17 +45,14 @@ export async function validateJsonSchema(value: unknown, schema: unknown): Promi
   // identical to the original inline validator.
   await validateAt(value, schema, "$", new Set(), collect);
   if (collect.tests.length === 0) {
-    return await validateAt(value, schema, "$", new Set(), { tests: [], results: new Map() });
+    return await validateAt(value, schema, "$", new Set(), { tests: [], results: [], cursor: 0 });
   }
   const batched = await testPatternsBatched(collect.tests);
   if (!batched.ok) {
     return invalid("schema pattern(s) could not be verified within the pattern time budget; pattern not verified");
   }
-  const results = new Map<string, boolean>();
-  for (let index = 0; index < collect.tests.length; index += 1) {
-    results.set(collect.tests[index].key, batched.matched[index] === true);
-  }
-  return await validateAt(value, schema, "$", new Set(), { tests: [], results });
+  const results = batched.matched.map((matched) => matched === true);
+  return await validateAt(value, schema, "$", new Set(), { tests: [], results, cursor: 0 });
 }
 
 async function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Record<string, unknown>>, pass: PatternPass): Promise<SchemaValidationResult> {
@@ -110,15 +113,17 @@ async function validateString(value: unknown, schema: Record<string, unknown>, p
     // Pattern matching never runs inline: the input-boundary heuristic is
     // approximate, a passing pattern can still backtrack exponentially, and a
     // synchronous test = an event-loop stall. Collect pass: record the test
-    // (path+source is unique per tree position). Check pass: resolve the REAL
-    // result where the composite decision happens; a missing entry (budget
-    // exhausted / worker failure) fails CLOSED.
-    const key = `${path} ${pattern.value.source}`;
+    // (id = encounter order). Check pass: resolve the REAL result where the
+    // composite decision happens; a missing entry fails CLOSED. The id is an
+    // opaque encounter index, NOT a path-derived string — dotted property names
+    // collide ($.a.b from "a.b" and from nested a>b) and a colliding key would
+    // let a later result overwrite an earlier one (codex P2 r3).
+    const id = pass.cursor++;
     if (pass.results === undefined) {
-      pass.tests.push({ source: pattern.value.source, value, key });
+      pass.tests[id] = { source: pattern.value.source, value };
       return ok();
     }
-    const matched = pass.results.get(key);
+    const matched = pass.results[id];
     if (matched === undefined) {
       return invalid(`${path} could not be verified within the pattern time budget; pattern not verified`);
     }

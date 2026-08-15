@@ -107,3 +107,25 @@ test("composite semantics survive batched patterns: anyOf/oneOf/not decide on RE
   assert.equal((await validateJsonSchema("b", { not: { type: "string", pattern: "^a$" } })).valid, true);
   assert.equal((await validateJsonSchema("a", { not: { type: "string", pattern: "^a$" } })).valid, false);
 });
+
+test("dotted property names do not collide with nested paths (codex P2 r3)", async () => {
+  // "a.b" (a literal property whose NAME contains a dot) and a nested a>b both
+  // render path $.a.b — a path-derived batch key would let one result overwrite
+  // the other and report a pattern-violating payload as valid.
+  const schema = {
+    type: "object",
+    properties: {
+      "a.b": { type: "string", pattern: "^[a-z]+$" }, // "x.y" violates (dot not in [a-z])
+      a: { type: "object", properties: { b: { type: "string", pattern: "^[a-z]+$" } } },
+    },
+  };
+  const value = { "a.b": "x.y", a: { b: "ok" } };
+  const result = await validateJsonSchema(value, schema);
+  assert.equal(result.valid, false, "the dotted property's violation must surface");
+  assert.match(result.message ?? "", /a\.b/);
+  // And the symmetric case: nested violates, dotted matches.
+  const result2 = await validateJsonSchema({ "a.b": "ok", a: { b: "x.y" } }, schema);
+  assert.equal(result2.valid, false);
+  // Clean value still passes.
+  assert.equal((await validateJsonSchema({ "a.b": "ok", a: { b: "ok" } }, schema)).valid, true);
+});
