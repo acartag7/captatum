@@ -55,4 +55,6 @@ exec "${CHROME}" \
   --disable-dev-shm-usage \
   --disable-background-networking \
   --no-remote \
+  --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
+  --proxy-server=http://127.0.0.1:1 \
   about:blank

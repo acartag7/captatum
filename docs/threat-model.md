@@ -134,12 +134,32 @@ the contract reference; this file is the security reasoning.
     original host) so DNS cannot rebind post-check.
   - manual redirects re-validated each hop, `maxHops=5`.
   - decompressed-byte cap; `AbortController` timeout.
-- Tier-3 in-browser SSRF: `page.route` intercepts every browser request before
-  the browser can egress, and **every non-aborted GET — and a first-party POST
+- Tier-3 in-browser SSRF: interception is installed at the **context** level
+  (`context.route("**/*")` — playwright-renderer.ts), which covers every page in
+  the render context **including popups**, and **every non-aborted GET — and a
+  first-party POST
   (same registrable domain, fetch/XHR only — #111) — is fulfilled through
   `FetcherPort`** (`route.fulfill`, never `route.continue`) — the browser never
   resolves or connects on its own, so DNS-rebinding and the redirect TOCTOU are
   structurally impossible and every redirect hop is re-validated (`maxHops`).
+  **Popups are closed on sight** via the CONTEXT-level page listener
+  (`context.on("page")` → close + a `popup-closed` action), which arms every new
+  page recursively — a popup's own `window.open` included; a page-level
+  `page.on("popup")` listener would observe only the render page's direct
+  popups and leave a descendant alive. Page-level routing alone covers only the
+  page and its frames, and a
+  `window.open`/`target=_blank` target would otherwise egress browser-direct,
+  bypassing the guarded fetcher entirely (executed PoC 2026-08-15: five
+  uninstrumented connections incl. a loopback navigation from a non-loopback
+  opener; regression: `test/integration/popup-egress.test.ts`). Context routing
+  guards anything a popup fires before the close lands, so neither layer depends
+  on the other's timing. **WebRTC**: both flavors launch Chromium with
+  `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` — ICE/STUN is
+  transport-layer UDP below request interception, so without the flag a rendered
+  page could probe/exfiltrate over UDP (executed PoC: STUN datagrams to a
+  loopback listener); the hosted browser pod's netns firewall blocks this too,
+  but the local in-process flavor has no such firewall, making the flag
+  load-bearing there.
   Image/font/media URLs and known ad/tracker hosts (`src/domain/adblock.ts`,
   a curated OSS-derived apex list) are checked with the same P1 URL/DNS
   private-IP guard and then aborted — the ad script/pixel never loads, so it can
@@ -185,7 +205,7 @@ the contract reference; this file is the security reasoning.
   The cluster node/kernel and principals allowed to mutate the Pod, its labels,
   or ingress NetworkPolicy remain inside the operator trust boundary. Either way the
   browser never runs in-process with `--no-sandbox` inside the gateway's blast
-  radius. The `page.route` SSRF guard applies identically in both modes.**
+  radius. The context-level route SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
   mode fails boot unless `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, the exact
@@ -381,7 +401,7 @@ it before any change to the bulk path. Contract reference:
 
 **Per-seed controls are UNCHANGED.** The orchestrator composes the single-URL
 use case per seed; it opens no new egress path. The rebinding-proof `guardedFetch`
-SSRF guard, the Tier-3 in-browser `page.route` fulfillment, the
+SSRF guard, the Tier-3 in-browser context-level `route` fulfillment, the
 sensitive-content transform gate, and the "fetched content is untrusted data"
 rule all apply identically to each seed. A private-IP / redirect-to-private /
 loopback seed is blocked per-seed (one `fail` entry, `tier:"error"`,
@@ -494,7 +514,7 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   `transform: { provider: "none" }` (a bounded excerpt, not the full page).
 - Advisory-only SSRF is unacceptable for the hosted flavor. Every egress path —
   Tier-1, Tier-2, every redirect hop, every Tier-3 document/script/fetch/XHR/
-  stylesheet request — must route through enforced `guardedFetch`/`page.route`
+  stylesheet request — must route through enforced `guardedFetch`/context-level `route`
   controls, and aborted Tier-3 body types must still pass P1 URL/DNS private-IP
   checks before being aborted.
 - Current Tier-1 HTTPS egress intentionally falls back to the Node requester

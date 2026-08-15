@@ -19,6 +19,7 @@ export type RenderActionType =
   | "request-blocked"
   | "websocket-closed"
   | "download-blocked"
+  | "popup-closed"
   | "request-forwarded-post";
 
 export interface RenderAction {

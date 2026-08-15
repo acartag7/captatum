@@ -46,7 +46,7 @@ export function classifyRenderFailure(
   return "unknown";
 }
 
-const BLOCKED_TYPES = ["request-blocked", "resource-aborted", "download-blocked", "websocket-closed"];
+const BLOCKED_TYPES = ["request-blocked", "resource-aborted", "download-blocked", "websocket-closed", "popup-closed"];
 
 function countByType(actions: readonly RenderAction[], types: readonly string[]): number {
   let n = 0;

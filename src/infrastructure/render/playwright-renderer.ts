@@ -14,10 +14,16 @@ import { resolveCdpConnectUrl, type CdpHostResolver } from "./cdp-connect.ts";
 import { RenderRouteState } from "./route-state.ts";
 import {
   abortRejection,
+  blockDownload,
   capRenderedBytes,
+  closePopup,
   closeQuietly,
+  closeLegacyWebSocket,
+  closeWebSocket,
   rejectFromError,
+  renderFailure,
   RenderError,
+  renderSuccess,
   serviceWorkerAction,
   withTimeout,
 } from "./renderer-helpers.ts";
@@ -123,6 +129,19 @@ export class PlaywrightRenderer implements RenderPort {
           headless: true,
           chromiumSandbox: this.chromiumSandbox,
           env: {},
+          // Transport-layer egress page.route cannot see, killed at BOTH layers:
+          // (1) WebRTC ICE/STUN over UDP — forbidden via the IP-handling policy
+          // (the hosted browser pod's netns firewall also blocks this; the local
+          // in-process flavor has no firewall, so the flag is load-bearing
+          // there); (2) WebRTC TURN over TCP (codex P1 r4: disable_non_proxied_udp
+          // still permits direct TCP to an attacker-chosen TURN server) — a dead
+          // loopback proxy sends every browser-originated TCP connection,
+          // TURN included, to a refusing socket. Route-fulfilled content never
+          // touches the network, so rendering is unaffected.
+          args: [
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--proxy-server=http://127.0.0.1:1",
+          ],
         });
         ownsBrowser = true;
       }
@@ -139,8 +158,15 @@ export class PlaywrightRenderer implements RenderPort {
         else input.signal.addEventListener("abort", onSignalAbort, { once: true });
       }
       state.setMainFrame(page.mainFrame());
-      await installPageControls(page, actions, input.timeoutMs);
-      await page.route("**/*", (route) => state.handle(route));
+      await installPageControls(context, page, actions, input.timeoutMs);
+      // POPUP-EGRESS FIX: route at the CONTEXT level. page.route covers only the
+      // page and its frames — a window.open / target=_blank popup is a NEW target
+      // whose requests egress browser-direct, bypassing the guarded FetcherPort
+      // entirely (executed PoC: 5 uninstrumented connections incl. loopback
+      // navigations). Context routing intercepts every page in the context, so
+      // anything a popup fires before it is closed still resolves through the
+      // same guarded fulfillment as any subresource.
+      await context.route("**/*", (route) => state.handle(route));
       const response = await withTimeout(
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: remaining() }),
         remaining(),
@@ -171,7 +197,7 @@ export class PlaywrightRenderer implements RenderPort {
       const notice: ProvenanceError | undefined = truncated
         ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }
         : undefined;
-      return renderSuccess(input, page, response?.status() ?? state.status, bytes, state, notice, domTextLength);
+      return renderSuccess(input, page.url(), response?.status() ?? state.status, bytes, state, notice, domTextLength);
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
@@ -185,6 +211,7 @@ export class PlaywrightRenderer implements RenderPort {
 }
 
 async function installPageControls(
+  context: PlaywrightContext,
   page: PlaywrightPage,
   actions: RenderAction[],
   timeoutMs: number,
@@ -192,55 +219,27 @@ async function installPageControls(
   page.setDefaultTimeout?.(timeoutMs);
   page.setDefaultNavigationTimeout?.(timeoutMs);
   page.on("download", (value) => blockDownload(value, actions));
-  if (page.routeWebSocket) {
-    await page.routeWebSocket("**/*", (socket) => closeWebSocket(socket, actions));
+  // A fetch-render has no use for popups: close them on sight — at the CONTEXT
+  // level, so a popup's own window.open (a popup-of-popup) is closed too, not
+  // just top-level popups of the render page (page.on("popup") arms one page
+  // only; codex P2 r3). Context-level routing (installed by render()) guards
+  // anything a new page fires before the close lands, so neither layer depends
+  // on the other's timing.
+  context.on("page", (newPage) => {
+    if (newPage === page) return;
+    closePopup(newPage, actions);
+  });
+  if (context.routeWebSocket) {
+    await context.routeWebSocket("**/*", (socket) => closeWebSocket(socket, actions));
   } else {
     page.on("websocket", (value) => closeLegacyWebSocket(value, actions));
   }
 }
 
-function blockDownload(value: PlaywrightEventValue, actions: RenderAction[]): void {
-  const download = value as PlaywrightDownload;
-  actions.push({ type: "download-blocked", reason: "downloads disabled", url: safeRenderUrl(download.url()) });
-  void download.cancel?.();
-}
 
-function closeLegacyWebSocket(value: PlaywrightEventValue, actions: RenderAction[]): void {
-  const socket = value as PlaywrightWebSocket;
-  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
-  void socket.close?.();
-}
 
-async function closeWebSocket(socket: PlaywrightWebSocketRoute, actions: RenderAction[]): Promise<void> {
-  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
-  await socket.close();
-}
 
-function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number, bytes: Uint8Array, state: RenderRouteState, notice: ProvenanceError | undefined, domTextLength: number | undefined): RenderOutput {
-  const egressHosts = state.egressHosts();
-  return {
-    rendered: true,
-    fetchResult: {
-      status,
-      finalUrl: state.finalUrl || safeRenderUrl(page.url()) || input.url,
-      redirects: state.redirects,
-      bodyStream: streamFromBytes(bytes),
-      contentType: "text/html; charset=utf-8",
-      bytes: bytes.byteLength,
-    },
-    actions: state.actions,
-    egressBytes: state.egressBytes(),
-    ...(egressHosts.length > 0 ? { egressHosts } : {}),
-    ...(domTextLength !== undefined ? { domTextLength } : {}),
-    ...(notice ? { notice } : {}),
-  };
-}
 
-function renderFailure(rejected: RejectResult, actions: RenderAction[], state: RenderRouteState): RenderFailure {
-  // A failed render may have fulfilled subresources before failing — carry the partial egress (codex R2 P2).
-  const egressHosts = state.egressHosts();
-  return { ...rejected, rendered: false, actions, egressBytes: state.egressBytes(), ...(egressHosts.length ? { egressHosts } : {}) };
-}
 
 async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
   try { return await import("playwright") as unknown as PlaywrightModule; }

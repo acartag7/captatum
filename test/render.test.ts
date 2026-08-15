@@ -28,6 +28,13 @@ test("renderer launches sandboxed context with service workers and downloads dis
   assert.equal(result.rendered, true);
   assert.deepEqual(harness.launchOptions.env, {});
   assert.equal(harness.launchOptions.chromiumSandbox, true);
+  // Transport-layer egress must die at BOTH layers: non-proxied UDP forbidden
+  // (ICE/STUN probing) AND every browser TCP connection (incl. TURN) sent to a
+  // dead loopback proxy — route-fulfilled content never touches the network.
+  assert.deepEqual(harness.launchOptions.args, [
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--proxy-server=http://127.0.0.1:1",
+  ]);
   assert.deepEqual(harness.contextOptions, {
     serviceWorkers: "block",
     acceptDownloads: false,
@@ -511,6 +518,27 @@ test("a CDP connect that loses the deadline race closes its late-arriving browse
   assert.equal(harness.browserClosed, true, "late connect result must be closed");
 });
 
+test("renderer closes popups at the context level, including popups-of-popups (popup-egress fix + codex P2 r3)", async () => {
+  const harness = new BrowserHarness();
+  const renderer = new PlaywrightRenderer({ loadPlaywright: harness.load, guard: new FakeGuard({}) });
+  const result = await renderer.render(renderInput(new FakeFetcher()));
+
+  // Interception must be CONTEXT-level: page.route covers only the page + its
+  // frames, leaving window.open popups to egress browser-direct (executed PoC).
+  assert.equal(result.rendered, true);
+  assert.equal(harness.contextRouteInstalled, true, "route must be installed on the context");
+
+  // Every NEW page in the context closes on sight (context.on("page")), which
+  // covers a popup's own window.open — page.on("popup") would arm only the
+  // render page and leave a popup-of-popup alive until teardown.
+  assert.ok(harness.popupHandler, "context page handler must be installed");
+  let closed = false;
+  const nested = { url: () => "http://popup.test/nested", close: async () => { closed = true; } };
+  await harness.popupHandler(nested);
+  assert.equal(closed, true);
+  assert.ok(result.actions.some((a) => a.type === "popup-closed" && a.url === "http://popup.test/nested"));
+});
+
 test("renderer returns timeout and closes the browser on stalled navigation", async () => {
   const harness = new BrowserHarness({ neverResolve: true });
   const result = await new PlaywrightRenderer({ loadPlaywright: harness.load })
@@ -561,6 +589,8 @@ class BrowserHarness {
   browserClosed = false;
   downloadCanceled = false;
   websocketClosed = false;
+  contextRouteInstalled = false;
+  popupHandler?: (page: { url(): string; close(): Promise<void> }) => void;
   // Stable frame sentinels so request.frame() === mainFrame distinguishes the
   // top-level document from an iframe navigation (matches page.mainFrame()).
   readonly mainFrame = {};
@@ -602,7 +632,27 @@ class BrowserHarness {
     return {
       newContext: async (options: Record<string, unknown>) => {
         this.contextOptions = options;
-        return { newPage: async () => this.page(), close: async () => {} };
+        // Route capture lives on the CONTEXT (the renderer installs context-level
+        // interception so popups are covered). page() deliberately exposes NO
+        // route/routeWebSocket — if the renderer regresses to page-level routing,
+        // goto finds no handler and these tests fail loudly.
+        return {
+          newPage: async () => this.page(),
+          close: async () => {},
+          on: (event: "page", handler: (p: { url(): string; close(): Promise<void> }) => void) => {
+            if (event === "page") this.popupHandler = handler;
+          },
+          route: async (_pattern: string, handler: (route: FakeRoute) => Promise<void> | void) => {
+            this.routeHandler = handler;
+            this.contextRouteInstalled = true;
+          },
+          routeWebSocket: async (
+            _pattern: string,
+            handler: (socket: FakeWebSocket) => Promise<void> | void,
+          ) => {
+            this.websocketHandler = handler;
+          },
+        };
       },
       close: async () => {
         this.browserClosed = true;
@@ -618,17 +668,8 @@ class BrowserHarness {
       ? { content: async () => this.options.extraFrameContent as string }
       : undefined;
     return {
-      route: async (_pattern: string, handler: (route: FakeRoute) => Promise<void> | void) => {
-        this.routeHandler = handler;
-      },
-      routeWebSocket: async (
-        _pattern: string,
-        handler: (socket: FakeWebSocket) => Promise<void> | void,
-      ) => {
-        this.websocketHandler = handler;
-      },
-      on: (event: "download", handler: (download: FakeDownload) => void) => {
-        if (event === "download") this.downloadHandler = handler;
+      on: (event: "download", handler: (value: unknown) => void) => {
+        if (event === "download") this.downloadHandler = handler as (d: FakeDownload) => void;
       },
       setDefaultTimeout: (_timeoutMs: number) => {},
       setDefaultNavigationTimeout: (_timeoutMs: number) => {},
