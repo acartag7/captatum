@@ -879,6 +879,17 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
     assert.equal(r.sensitive, false, "truncated-at-cap authority must defer, not fail closed");
   }
+  // ... but ONLY when the match's last character IS the head's last character:
+  // a complete malformed authority ending one char before the cap still has its
+  // TERMINATOR inside the head (the regex consumes boundary+authority, never a
+  // trailing delimiter), which proves it complete — it must fail closed (P1).
+  {
+    const ref = " //alice:correcthorse@10.0.0.5:99999 ";
+    const content = "a".repeat(500_000 - ref.length) + ref + " tail " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true, "complete malformed authority at cap-1 must fail closed");
+    assert.equal(r.reason, "content_embedded_malformed_network_path");
+  }
   // A malformed authority fully INSIDE the head still fails closed.
   {
     const content = "see //[" + "x".repeat(400_000) + " end";

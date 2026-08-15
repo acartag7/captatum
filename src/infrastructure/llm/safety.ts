@@ -198,9 +198,13 @@ export function detectSensitiveTransformInput(input: {
       // would degrade large public pages on byte alignment alone (codex P2) —
       // same accepted-cap residual as a presigned URL past the cap. Only a
       // malformed authority fully inside the head fails closed.
+      // EXACTLY at the cap: the regex consumes only boundary+authority, never a
+      // trailing delimiter, so a match ending at head.length - 1 still has its
+      // terminator inside the head — the authority is COMPLETE and must fail
+      // closed; only a match whose last char IS the head's last char is sliced.
       const atHeadEdge = headTruncated
         && match.index !== undefined
-        && match.index + match[0].length >= head.length - 1;
+        && match.index + match[0].length === head.length;
       if (atHeadEdge) continue;
       return { sensitive: true, reason: "content_embedded_malformed_network_path" };
     }
