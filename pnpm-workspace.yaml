@@ -11,3 +11,8 @@ minimumReleaseAge: 21600
 # Remove once a release clears 15 days organically. Re-check before every install/deploy.
 minimumReleaseAgeExclude:
   - mcp-sso
+  # ADVISORY-DRIVEN exception (recorded in docs/dependency-ledger.md): hono 4.12.34 is
+  # the minimum version fixing five published GHSAs and is younger than the 15-day gate
+  # (published 2026-08-03). Advisory-driven updates do NOT wait; the exception is
+  # per-package ONLY — the global floor is unchanged.
+  - hono

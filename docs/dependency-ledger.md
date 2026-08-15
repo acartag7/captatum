@@ -157,13 +157,28 @@ same canonical URL representation. This is therefore a time-bounded
 non-reachability disposition, not a claim that the vulnerable package versions
 are acceptable indefinitely.
 
-The `fast-uri` exception expires at `2026-08-03T07:42:54.497Z`; upgrade it in
-the first patch release on or after that instant, rerun the production audit,
-and remove its exception. The `find-my-way` exception separately expires at
-`2026-08-05T16:45:28.799Z`; upgrade it in the first patch release on or after
-that instant, rerun the audit, and remove the remaining exception. Do not enable
-the affected optional transport or introduce the affected URI resolver at a
-trust boundary while either disposition is active.
+**RESOLVED 2026-08-15 — the mandated upgrades shipped (both exceptions had
+expired; `pnpm audit --prod` is now CLEAN).** Every advisory currently
+published against the prod tree is closed by an exact-pinned override at the
+advisory's minimum fixing version:
+
+| package | override | fixes (GHSA) | published | gate |
+| --- | --- | --- | --- | --- |
+| find-my-way | 9.7.0 | GHSA-c96f-x56v-gq3h | 2026-07-21 | 25d — passes |
+| fast-uri | 3.1.5 | GHSA-v2hh-gcrm-f6hx, GHSA-7p8r-x3mc-p8w7, GHSA-4c8g-83qw-93j6 | 2026-07-31 | 15d — passes |
+| hono | 4.12.34 | GHSA-xgm2-5f3f-mvvc, GHSA-hvrm-45r6-mjfj, GHSA-w62v-xxxg-mg59, GHSA-8j4g-w8fx-2239, GHSA-f23p-vx2j-j53r, GHSA-79qm-7rj5-m7r9, GHSA-54fx-42gc-7vw4 | 2026-08-03 | 12.7d — **advisory-driven exception**, `minimumReleaseAgeExclude: [hono]` (per-package; global floor unchanged) |
+| @hono/node-server | 1.19.15 | GHSA-frvp-7c67-39w9 | 2026-07-24 | 22d — passes |
+| ip-address | 10.3.1 | GHSA-mwp4-54f8-5fhr, GHSA-4xrf-jv44-h6hh, GHSA-22jq-vg5j-6vgg | 2026-07-25 | 21d — passes |
+| body-parser | 2.3.0 | GHSA-v422-hmwv-36x6 | 2026-06-15 | 61d — passes |
+
+All six are patch/patch-range security bumps at the advisories' stated minimum
+fixing versions (inspected: security-only changes, no new capabilities); hono,
+ip-address, body-parser, and @hono/node-server arrive via the mcp-sso
+dependency chain (unused transports in captatum's wiring) but are upgraded
+anyway so `pnpm audit --prod` stays clean per this ledger's gate. The
+non-reachability analysis above remains the recorded reasoning for the window
+the vulnerable versions shipped. Remove the hono exclude once it clears 15 days
+organically.
 
 ## Browser workload image (Dockerfile.browser)
 

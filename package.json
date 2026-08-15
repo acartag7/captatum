@@ -2,7 +2,7 @@
   "name": "captatum",
   "version": "0.20.1",
   "type": "module",
-  "description": "Captatum — adaptive MCP web-fetch tool for AI agents: SSRF-safe, injection-safe reads with a provenance receipt on every call; renders JS only when needed, extracts structured data (JSON-LD/OG).",
+  "description": "Captatum \u2014 adaptive MCP web-fetch tool for AI agents: SSRF-safe, injection-safe reads with a provenance receipt on every call; renders JS only when needed, extracts structured data (JSON-LD/OG).",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -66,7 +66,12 @@
   "pnpm": {
     "onlyBuiltDependencies": [],
     "overrides": {
-      "hono": "4.12.25"
+      "hono": "4.12.34",
+      "find-my-way": "9.7.0",
+      "fast-uri": "3.1.5",
+      "ip-address": "10.3.1",
+      "body-parser": "2.3.0",
+      "@hono/node-server": "1.19.15"
     }
   }
 }
