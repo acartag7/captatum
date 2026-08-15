@@ -14,6 +14,8 @@
  *  NOT in this set cannot be verified, so it fails closed — at the input boundary (before any
  *  fetch/LLM) and, defense-in-depth, at the transform seam. This is the single source of truth;
  *  json-schema.ts imports it rather than redeclaring. */
+import { toRegExp } from "./schema-pattern.ts";
+
 export const SUPPORTED_SCHEMA_KEYS: ReadonlySet<string> = new Set([
   "$comment", "$defs", "$id", "$schema", "additionalProperties", "allOf", "anyOf", "const",
   "default", "deprecated", "description", "enum", "examples", "exclusiveMaximum",
@@ -34,7 +36,8 @@ export const MAX_SCHEMA_DEPTH = 64;
 export type SchemaKeywordFinding =
   | { kind: "unsupported"; key: string; path: string }
   | { kind: "too_deep"; path: string }
-  | { kind: "tuple_items"; path: string };
+  | { kind: "tuple_items"; path: string }
+  | { kind: "invalid_pattern"; path: string; message: string };
 
 /** Length-cap an untrusted caller string (an offending keyword or a property name) before it
  *  enters an error message — a hostile multi-KB value must not bloat the JSON-RPC error /
@@ -108,6 +111,17 @@ function walk(
   seen.add(schema);
   for (const key of Object.keys(schema)) {
     if (!SUPPORTED_SCHEMA_KEYS.has(key)) return { kind: "unsupported", key, path };
+  }
+  // `pattern` is an allowed KEY whose VALUE compiles to a RegExp captatum will
+  // EXECUTE — validate its content HERE (pre-fetch) so an oversized, invalid, or
+  // heuristic-flagged pattern is rejected before any egress/LLM spend, not at
+  // finalize after the bill (the two layers share domain/schema-pattern.ts).
+  // The toRegExp messages carry the path only — no schema value is echoed.
+  if (typeof schema.pattern === "string") {
+    const compiled = toRegExp(schema.pattern, path);
+    if (!compiled.valid) return { kind: "invalid_pattern", path, message: compiled.message };
+  } else if ("pattern" in schema) {
+    return { kind: "invalid_pattern", path, message: `${path} schema pattern must be a string` };
   }
   // Tuple-form items (an array) is an unverifiable form: the value validator only advisories it
   // (invalid, not unsupported), so fail closed at the input boundary like an unsupported keyword.

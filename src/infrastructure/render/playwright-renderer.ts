@@ -10,7 +10,23 @@ import type {
 import { parseCdpEndpoint } from "../../config.ts";
 import { streamFromBytes } from "../http/body.ts";
 import { P1BrowserUrlGuard, safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
+import { resolveCdpConnectUrl, type CdpHostResolver } from "./cdp-connect.ts";
 import { RenderRouteState } from "./route-state.ts";
+import {
+  abortRejection,
+  blockDownload,
+  capRenderedBytes,
+  closePopup,
+  closeQuietly,
+  closeLegacyWebSocket,
+  closeWebSocket,
+  rejectFromError,
+  renderFailure,
+  RenderError,
+  renderSuccess,
+  serviceWorkerAction,
+  withTimeout,
+} from "./renderer-helpers.ts";
 import { liveDomTextLength, waitForBodyStable } from "./settle.ts";
 import type {
   PlaywrightBrowser,
@@ -28,6 +44,8 @@ export interface PlaywrightRendererDeps {
   guard?: BrowserUrlGuard;
   /** Allowlisted CDP endpoint for the isolated hosted browser workload. If set, the renderer connects to long-lived Chromium instead of launching one in-process. */
   cdpEndpoint?: string;
+  /** Resolves the CDP Service hostname to the IP form Chromium's DevTools Host check accepts (test-injectable). */
+  cdpResolver?: CdpHostResolver;
   /** Chromium OS sandbox for in-process launch. Default true — the threat model mandates sandbox on; --no-sandbox in-process is transitional local-only behavior. */
   chromiumSandbox?: boolean;
   /** Post-load settle: networkidle cap, content-stability min dwell, stable threshold (ms).
@@ -41,6 +59,7 @@ export class PlaywrightRenderer implements RenderPort {
   private readonly loadPlaywright: () => Promise<PlaywrightModule>;
   private readonly guard: BrowserUrlGuard;
   private readonly cdpEndpoint?: string;
+  private readonly cdpResolver?: CdpHostResolver;
   private readonly chromiumSandbox: boolean;
   private readonly settleMs: number;
   private readonly settleMinDwellMs: number;
@@ -52,6 +71,7 @@ export class PlaywrightRenderer implements RenderPort {
     this.loadPlaywright = deps.loadPlaywright ?? defaultLoadPlaywright;
     this.guard = deps.guard ?? new P1BrowserUrlGuard();
     this.cdpEndpoint = parseCdpEndpoint(deps.cdpEndpoint ?? "");
+    this.cdpResolver = deps.cdpResolver;
     this.chromiumSandbox = deps.chromiumSandbox ?? true;
     this.settleMs = deps.settleMs ?? 5000; // #110: was 3000; both waits return early when stable, so a larger cap only helps slow-hydrating SPAs (total settle bounded by render timeoutMs).
     this.settleMinDwellMs = deps.settleMinDwellMs ?? 1500;
@@ -61,6 +81,11 @@ export class PlaywrightRenderer implements RenderPort {
   async render(input: RenderInput): Promise<RenderOutput> {
     const actions: RenderAction[] = [serviceWorkerAction()];
     const state = new RenderRouteState(input, actions, this.guard);
+    // ONE deadline for the whole render (codex P1 r2): established before CDP
+    // resolution so DNS/connect, navigation, and settling share the single
+    // per-tier timeoutMs budget instead of each phase getting a fresh full one.
+    const startedAt = Date.now();
+    const remaining = (): number => Math.max(0, input.timeoutMs - (Date.now() - startedAt));
     let browser: PlaywrightBrowser | undefined;
     let context: PlaywrightContext | undefined;
     let page: PlaywrightPage | undefined;
@@ -69,13 +94,54 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        if (!this.cdpBrowser) this.cdpBrowser = await playwright.chromium.connectOverCDP(this.cdpEndpoint);
+        if (!this.cdpBrowser) {
+          // Connect over the RESOLVED address: Chromium's DevTools server 500s any
+          // request whose Host header is not an IP/localhost, so dialing the Service
+          // DNS name fails at /json/version (observed in production; see cdp-connect.ts).
+          // The resolution + connect run BEFORE the per-request timeout bookkeeping
+          // below, so they carry their own bound: the render deadline AND the caller's
+          // abort signal (the bulk wall) — a stalled DNS lookup must not hold a render
+          // slot past either (codex P1).
+          const endpoint = this.cdpEndpoint; // narrowed for the closure below
+          if (input.signal?.aborted) throw new Error("render_timeout");
+          const connect = (async () => playwright.chromium.connectOverCDP(
+            await resolveCdpConnectUrl(endpoint, this.cdpResolver),
+          ))();
+          let connected = false;
+          try {
+            this.cdpBrowser = await withTimeout(
+              input.signal
+                ? Promise.race([connect, abortRejection(input.signal)])
+                : connect,
+              remaining(),
+            );
+            connected = true;
+          } finally {
+            // Lost the race (deadline/abort): a late-arriving browser must not
+            // leak a live CDP WebSocket against the relay's 32-connection cap
+            // (codex P2 r2) — close it when it lands and swallow the rejection.
+            if (!connected) void connect.then((b) => b.close().catch(() => {})).catch(() => {});
+          }
+        }
         browser = this.cdpBrowser;
       } else {
         browser = await playwright.chromium.launch({
           headless: true,
           chromiumSandbox: this.chromiumSandbox,
           env: {},
+          // Transport-layer egress page.route cannot see, killed at BOTH layers:
+          // (1) WebRTC ICE/STUN over UDP — forbidden via the IP-handling policy
+          // (the hosted browser pod's netns firewall also blocks this; the local
+          // in-process flavor has no firewall, so the flag is load-bearing
+          // there); (2) WebRTC TURN over TCP (codex P1 r4: disable_non_proxied_udp
+          // still permits direct TCP to an attacker-chosen TURN server) — a dead
+          // loopback proxy sends every browser-originated TCP connection,
+          // TURN included, to a refusing socket. Route-fulfilled content never
+          // touches the network, so rendering is unaffected.
+          args: [
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--proxy-server=http://127.0.0.1:1",
+          ],
         });
         ownsBrowser = true;
       }
@@ -92,13 +158,18 @@ export class PlaywrightRenderer implements RenderPort {
         else input.signal.addEventListener("abort", onSignalAbort, { once: true });
       }
       state.setMainFrame(page.mainFrame());
-      await installPageControls(page, actions, input.timeoutMs);
-      await page.route("**/*", (route) => state.handle(route));
-      const startedAt = Date.now();
-      const remaining = (): number => Math.max(0, input.timeoutMs - (Date.now() - startedAt));
+      await installPageControls(context, page, actions, input.timeoutMs);
+      // POPUP-EGRESS FIX: route at the CONTEXT level. page.route covers only the
+      // page and its frames — a window.open / target=_blank popup is a NEW target
+      // whose requests egress browser-direct, bypassing the guarded FetcherPort
+      // entirely (executed PoC: 5 uninstrumented connections incl. loopback
+      // navigations). Context routing intercepts every page in the context, so
+      // anything a popup fires before it is closed still resolves through the
+      // same guarded fulfillment as any subresource.
+      await context.route("**/*", (route) => state.handle(route));
       const response = await withTimeout(
-        page.goto(input.url, { waitUntil: "domcontentloaded", timeout: input.timeoutMs }),
-        input.timeoutMs,
+        page.goto(input.url, { waitUntil: "domcontentloaded", timeout: remaining() }),
+        remaining(),
       );
       // Idle-aware settle: networkidle then a content-stability dwell. The networkidle cap RESERVES
       // settleMinDwellMs for the content-stability phase; a 0 cap SKIPS the wait (timeout:0 = no-timeout hang).
@@ -126,7 +197,7 @@ export class PlaywrightRenderer implements RenderPort {
       const notice: ProvenanceError | undefined = truncated
         ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }
         : undefined;
-      return renderSuccess(input, page, response?.status() ?? state.status, bytes, state, notice, domTextLength);
+      return renderSuccess(input, page.url(), response?.status() ?? state.status, bytes, state, notice, domTextLength);
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
@@ -140,6 +211,7 @@ export class PlaywrightRenderer implements RenderPort {
 }
 
 async function installPageControls(
+  context: PlaywrightContext,
   page: PlaywrightPage,
   actions: RenderAction[],
   timeoutMs: number,
@@ -147,102 +219,29 @@ async function installPageControls(
   page.setDefaultTimeout?.(timeoutMs);
   page.setDefaultNavigationTimeout?.(timeoutMs);
   page.on("download", (value) => blockDownload(value, actions));
-  if (page.routeWebSocket) {
-    await page.routeWebSocket("**/*", (socket) => closeWebSocket(socket, actions));
+  // A fetch-render has no use for popups: close them on sight — at the CONTEXT
+  // level, so a popup's own window.open (a popup-of-popup) is closed too, not
+  // just top-level popups of the render page (page.on("popup") arms one page
+  // only; codex P2 r3). Context-level routing (installed by render()) guards
+  // anything a new page fires before the close lands, so neither layer depends
+  // on the other's timing.
+  context.on("page", (newPage) => {
+    if (newPage === page) return;
+    closePopup(newPage, actions);
+  });
+  if (context.routeWebSocket) {
+    await context.routeWebSocket("**/*", (socket) => closeWebSocket(socket, actions));
   } else {
     page.on("websocket", (value) => closeLegacyWebSocket(value, actions));
   }
 }
 
-function blockDownload(value: PlaywrightEventValue, actions: RenderAction[]): void {
-  const download = value as PlaywrightDownload;
-  actions.push({ type: "download-blocked", reason: "downloads disabled", url: safeRenderUrl(download.url()) });
-  void download.cancel?.();
-}
 
-function closeLegacyWebSocket(value: PlaywrightEventValue, actions: RenderAction[]): void {
-  const socket = value as PlaywrightWebSocket;
-  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
-  void socket.close?.();
-}
 
-async function closeWebSocket(socket: PlaywrightWebSocketRoute, actions: RenderAction[]): Promise<void> {
-  actions.push({ type: "websocket-closed", reason: "websockets disabled", url: safeRenderUrl(socket.url()) });
-  await socket.close();
-}
 
-function renderSuccess(input: RenderInput, page: PlaywrightPage, status: number, bytes: Uint8Array, state: RenderRouteState, notice: ProvenanceError | undefined, domTextLength: number | undefined): RenderOutput {
-  const egressHosts = state.egressHosts();
-  return {
-    rendered: true,
-    fetchResult: {
-      status,
-      finalUrl: state.finalUrl || safeRenderUrl(page.url()) || input.url,
-      redirects: state.redirects,
-      bodyStream: streamFromBytes(bytes),
-      contentType: "text/html; charset=utf-8",
-      bytes: bytes.byteLength,
-    },
-    actions: state.actions,
-    egressBytes: state.egressBytes(),
-    ...(egressHosts.length > 0 ? { egressHosts } : {}),
-    ...(domTextLength !== undefined ? { domTextLength } : {}),
-    ...(notice ? { notice } : {}),
-  };
-}
 
-/** UTF-8-safe truncation: cut at the largest char boundary ≤ maxBytes by walking
- *  back past trailing continuation bytes (0x80–0xBF) so the slice is always valid UTF-8. */
-function capRenderedBytes(content: string, maxBytes: number): { bytes: Uint8Array; truncated: boolean } {
-  const full = new TextEncoder().encode(content);
-  if (full.byteLength <= maxBytes) return { bytes: full, truncated: false };
-  let cut = maxBytes;
-  while (cut > 0 && (full[cut] & 0xc0) === 0x80) cut -= 1;
-  return { bytes: full.subarray(0, cut), truncated: true };
-}
-
-function renderFailure(rejected: RejectResult, actions: RenderAction[], state: RenderRouteState): RenderFailure {
-  // A failed render may have fulfilled subresources before failing — carry the partial egress (codex R2 P2).
-  const egressHosts = state.egressHosts();
-  return { ...rejected, rendered: false, actions, egressBytes: state.egressBytes(), ...(egressHosts.length ? { egressHosts } : {}) };
-}
 
 async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
   try { return await import("playwright") as unknown as PlaywrightModule; }
   catch { throw new RenderError("render_unavailable", "Playwright is not installed"); }
-}
-
-class RenderError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "RenderError";
-    this.code = code;
-  }
-}
-
-function rejectFromError(error: unknown): RejectResult {
-  if (error instanceof RenderError) {
-    return { rejected: true, code: error.code, message: error.message };
-  }
-  if (error instanceof Error && error.message === "render_timeout") {
-    return { rejected: true, code: "timeout", message: "Render timed out" };
-  }
-  const detail = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`captatum render error: ${detail}\n`);
-  return { rejected: true, code: "render_error", message: `Tier-3 render failed: ${detail}` };
-}
-
-function serviceWorkerAction(): RenderAction { return { type: "service-workers-disabled", reason: "context serviceWorkers=block" }; }
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const timer = new Promise<T>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error("render_timeout")), timeoutMs);
-  });
-  try { return await Promise.race([promise, timer]); } finally { if (timeout) clearTimeout(timeout); }
-}
-
-async function closeQuietly(closeable: { close(): Promise<void> } | undefined): Promise<void> {
-  try { await closeable?.close(); } catch { /* best-effort cleanup */ }
 }

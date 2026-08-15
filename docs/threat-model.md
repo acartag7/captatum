@@ -134,12 +134,32 @@ the contract reference; this file is the security reasoning.
     original host) so DNS cannot rebind post-check.
   - manual redirects re-validated each hop, `maxHops=5`.
   - decompressed-byte cap; `AbortController` timeout.
-- Tier-3 in-browser SSRF: `page.route` intercepts every browser request before
-  the browser can egress, and **every non-aborted GET — and a first-party POST
+- Tier-3 in-browser SSRF: interception is installed at the **context** level
+  (`context.route("**/*")` — playwright-renderer.ts), which covers every page in
+  the render context **including popups**, and **every non-aborted GET — and a
+  first-party POST
   (same registrable domain, fetch/XHR only — #111) — is fulfilled through
   `FetcherPort`** (`route.fulfill`, never `route.continue`) — the browser never
   resolves or connects on its own, so DNS-rebinding and the redirect TOCTOU are
   structurally impossible and every redirect hop is re-validated (`maxHops`).
+  **Popups are closed on sight** via the CONTEXT-level page listener
+  (`context.on("page")` → close + a `popup-closed` action), which arms every new
+  page recursively — a popup's own `window.open` included; a page-level
+  `page.on("popup")` listener would observe only the render page's direct
+  popups and leave a descendant alive. Page-level routing alone covers only the
+  page and its frames, and a
+  `window.open`/`target=_blank` target would otherwise egress browser-direct,
+  bypassing the guarded fetcher entirely (executed PoC 2026-08-15: five
+  uninstrumented connections incl. a loopback navigation from a non-loopback
+  opener; regression: `test/integration/popup-egress.test.ts`). Context routing
+  guards anything a popup fires before the close lands, so neither layer depends
+  on the other's timing. **WebRTC**: both flavors launch Chromium with
+  `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` — ICE/STUN is
+  transport-layer UDP below request interception, so without the flag a rendered
+  page could probe/exfiltrate over UDP (executed PoC: STUN datagrams to a
+  loopback listener); the hosted browser pod's netns firewall blocks this too,
+  but the local in-process flavor has no such firewall, making the flag
+  load-bearing there.
   Image/font/media URLs and known ad/tracker hosts (`src/domain/adblock.ts`,
   a curated OSS-derived apex list) are checked with the same P1 URL/DNS
   private-IP guard and then aborted — the ad script/pixel never loads, so it can
@@ -172,12 +192,20 @@ the contract reference; this file is the security reasoning.
   `<service>.<namespace>.svc.cluster.local` DNS-1123 shape; parsing and
   allowlisting happen before any hosted state side effect. The deployer owns the
   concrete Service name. Loopback CDP is rejected because it recreates the
-  shared-network-namespace attack. This
+  shared-network-namespace attack. At connect time the renderer swaps the
+  hostname for the address it resolves to (`src/infrastructure/render/cdp-connect.ts`):
+  Chromium's DevTools server rejects any request whose Host header is neither an
+  IP literal nor localhost (DNS-rebinding protection), so dialing the Service
+  DNS name through the byte-transparent relay fails with a bare 500 at
+  `/json/version` — an IP-form Host passes the check while kube-proxy still
+  routes through the same ClusterIP. The configured endpoint itself keeps the
+  validated Service shape; resolution failure fails the render (no fallback).
+  This
   prevents both packet sniffing and sibling port rebinding during a gateway restart.
   The cluster node/kernel and principals allowed to mutate the Pod, its labels,
   or ingress NetworkPolicy remain inside the operator trust boundary. Either way the
   browser never runs in-process with `--no-sandbox` inside the gateway's blast
-  radius. The `page.route` SSRF guard applies identically in both modes.**
+  radius. The context-level route SSRF guard applies identically in both modes.**
 - Inbound Host/Origin DNS-rebinding protection via the SDK transport
   (`enableDnsRebindingProtection`, `allowedHosts`, `allowedOrigins`). Hosted
   mode fails boot unless `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, the exact
@@ -278,7 +306,15 @@ the contract reference; this file is the security reasoning.
   every remaining keyword Captatum cannot verify (`format`, `contentEncoding`, invalid recovered
   values, and all non-allowlisted tool keys). Allowlist, not blocklist (house rule). The offending
   key AND each property-name path segment are length-capped before they enter the error message, and
-  **no schema value is ever echoed**. The same recovery runs once on `captatum_bulk`'s uniform schema;
+  **no schema value is ever echoed**. Pattern **execution** is wall-clock-bounded (worker thread, fail-closed on
+timeout): the heuristic compares raw branch text and cannot see semantic
+overlap between escape/class forms — `(\s|\x20)+` passes it and backtracks
+exponentially in V8 (executed 2026-08-15: 9.2 s on a 28-char value, a
+synchronous event-loop stall the admission cap cannot bound; the 8 KiB value
+cap bounds input LENGTH, not match TIME). The input boundary additionally
+rejects pattern CONTENT (oversized/heuristic-flagged/invalid/non-string)
+pre-fetch, so a deterministically-unusable pattern never bills a fetch+LLM.
+The same recovery runs once on `captatum_bulk`'s uniform schema;
   its warning is call-level and not duplicated per seed. A defense-in-depth copy remains at the transform seam (`finalize`) — dead in the production call
   graph (normalize always runs first), retained only for a hypothetical direct-`TransformPort`
   caller. **Depth:** the recursive walk carries an explicit `MAX_SCHEMA_DEPTH = 64` and fails
@@ -373,7 +409,7 @@ it before any change to the bulk path. Contract reference:
 
 **Per-seed controls are UNCHANGED.** The orchestrator composes the single-URL
 use case per seed; it opens no new egress path. The rebinding-proof `guardedFetch`
-SSRF guard, the Tier-3 in-browser `page.route` fulfillment, the
+SSRF guard, the Tier-3 in-browser context-level `route` fulfillment, the
 sensitive-content transform gate, and the "fetched content is untrusted data"
 rule all apply identically to each seed. A private-IP / redirect-to-private /
 loopback seed is blocked per-seed (one `fail` entry, `tier:"error"`,
@@ -486,7 +522,7 @@ event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
   `transform: { provider: "none" }` (a bounded excerpt, not the full page).
 - Advisory-only SSRF is unacceptable for the hosted flavor. Every egress path —
   Tier-1, Tier-2, every redirect hop, every Tier-3 document/script/fetch/XHR/
-  stylesheet request — must route through enforced `guardedFetch`/`page.route`
+  stylesheet request — must route through enforced `guardedFetch`/context-level `route`
   controls, and aborted Tier-3 body types must still pass P1 URL/DNS private-IP
   checks before being aborted.
 - Current Tier-1 HTTPS egress intentionally falls back to the Node requester

@@ -124,6 +124,12 @@ export function assertExtractSchemaSupported(output: unknown, schema: unknown): 
       `Tuple-form "items" (arrays) are not supported at ${finding.path} — captatum cannot verify tuple validation; use a single schema (items: {…}).`,
     );
   }
+  if (finding.kind === "invalid_pattern") {
+    throw new CaptatumInputError(
+      "extract_schema_invalid_pattern",
+      `${finding.message} — captatum cannot safely execute it; simplify the pattern.`,
+    );
+  }
   throw new CaptatumInputError("extract_schema_unsupported_keyword", messageForUnsupportedKeyword(finding.key, finding.path));
 }
 
