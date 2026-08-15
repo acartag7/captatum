@@ -1,4 +1,4 @@
-import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, stringArray, stripJsonFence, unsupported, toRegExp, validateEnum, validateSupported, validateType, type SchemaValidationResult } from "./json-schema-utils.ts";
+import { deepEqual, finiteNumber, hasDuplicate, invalid, isMultipleOf, isRecord, matchesType, nonNegativeInteger, objectMap, ok, stringArray, stripJsonFence, unsupported, toRegExp, validateEnum, validateNumber, validateSupported, validateType, type SchemaValidationResult } from "./json-schema-utils.ts";
 import { validateComposites } from "./json-schema-composites.ts";
 import { testPatternsBatched, type PatternTest } from "./bounded-pattern.ts";
 import { SUPPORTED_SCHEMA_KEYS, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
@@ -7,37 +7,28 @@ export type { SchemaValidationResult } from "./json-schema-utils.ts";
 
 const JSON_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
 
-export function parseJsonResult(text: string): unknown {
-  const trimmed = stripJsonFence(text.trim());
-  return JSON.parse(trimmed) as unknown;
-}
 
-/** Two-pass pattern execution (codex r2). Pass 1 (collect): the traversal runs
- *  with `results === undefined`; every pattern encountered is recorded (keyed by
- *  its tree path + pattern source) and treated as matching, so composites
- *  (anyOf/oneOf/not) do not DECIDE on deferred values. All recorded tests then
- *  execute together in ONE bounded worker round-trip — a per-element spawn
- *  would give a 100-element result 100 × the 500 ms budget (codex P1). Pass 2
- *  (check): the identical pure walk re-runs with the results map, so every
- *  pattern — including ones nested inside composite branches — resolves to its
- *  REAL answer exactly where the composite makes its decision. A result missing
- *  from the map (budget exhausted, worker failure) fails CLOSED. */
+/** Two-pass pattern execution (codex r2-r5). Collect pass: every (schema NODE,
+ *  value) pair carrying a pattern is recorded — keyed by node identity + value,
+ *  NOT traversal position (the passes short-circuit differently, and positional
+ *  ids desynced under that, once producing fail-open acceptance). All tests run
+ *  in ONE bounded worker round-trip. Check pass: the identical walk resolves
+ *  each pattern at its (node, value) key, so composites decide on REAL results;
+ *  a missing entry (budget exhausted / worker failure) fails CLOSED. */
 interface PatternPass {
-  /** Pattern encounters, in deterministic walk order (the collect and check
-   *  passes replay the identical pure walk, so encounter #N is the same test
-   *  in both). */
+  collecting: boolean;
   tests: PatternTest[];
-  /** Check pass only: worker result per encounter index. Absent = fail closed. */
-  results?: boolean[];
-  /** Encounters so far in this pass (allocate the next test id). */
-  cursor: number;
+  /** node -> value -> matched (filled by the check pass; WeakMap keyed by the
+   *  schema node object itself, so equal-looking nodes at different tree
+   *  positions never share a result). */
+  byNode?: WeakMap<object, Map<unknown, boolean>>;
 }
 
 export async function validateJsonSchema(value: unknown, schema: unknown): Promise<SchemaValidationResult> {
   if (schema === undefined || schema === true) return ok();
   if (schema === false) return invalid("$ is not allowed by false schema");
   if (!isRecord(schema)) return invalid("schema must be an object or boolean");
-  const collect: PatternPass = { tests: [], cursor: 0 };
+  const collect: PatternPass = { collecting: true, tests: [] };
   // Collect pass — RESULT DISCARDED: with patterns unresolved there is no sound
   // default (deferred-true breaks `not`; deferred-false breaks anyOf), so this
   // walk exists ONLY to gather the pattern tests. The check pass below is the
@@ -45,14 +36,23 @@ export async function validateJsonSchema(value: unknown, schema: unknown): Promi
   // identical to the original inline validator.
   await validateAt(value, schema, "$", new Set(), collect);
   if (collect.tests.length === 0) {
-    return await validateAt(value, schema, "$", new Set(), { tests: [], results: [], cursor: 0 });
+    return await validateAt(value, schema, "$", new Set(), { collecting: false, tests: [] });
   }
   const batched = await testPatternsBatched(collect.tests);
   if (!batched.ok) {
     return invalid("schema pattern(s) could not be verified within the pattern time budget; pattern not verified");
   }
-  const results = batched.matched.map((matched) => matched === true);
-  return await validateAt(value, schema, "$", new Set(), { tests: [], results, cursor: 0 });
+  const byNode = new WeakMap<object, Map<unknown, boolean>>();
+  for (let index = 0; index < collect.tests.length; index += 1) {
+    const test = collect.tests[index];
+    let values = byNode.get(test.node);
+    if (!values) {
+      values = new Map();
+      byNode.set(test.node, values);
+    }
+    values.set(test.value, batched.matched[index] === true);
+  }
+  return await validateAt(value, schema, "$", new Set(), { collecting: false, tests: [], byNode });
 }
 
 async function validateAt(value: unknown, schema: unknown, path: string, stack: Set<Record<string, unknown>>, pass: PatternPass): Promise<SchemaValidationResult> {
@@ -66,7 +66,7 @@ async function validateAt(value: unknown, schema: unknown, path: string, stack: 
     // awaits only when reached (an early failure skips later pattern tests).
     const steps: Array<() => SchemaValidationResult | Promise<SchemaValidationResult>> = [
       () => validateSupported(schema, path),
-      () => validateComposites(value, schema, path, stack, (v, s, p, st) => validateAt(v, s, p, st, pass), pass.results === undefined),
+      () => validateComposites(value, schema, path, stack, (v, s, p, st) => validateAt(v, s, p, st, pass), pass.collecting),
       () => validateEnum(value, schema, path),
       () => validateType(value, schema, path),
       () => validateString(value, schema, path, pass),
@@ -118,12 +118,22 @@ async function validateString(value: unknown, schema: Record<string, unknown>, p
     // opaque encounter index, NOT a path-derived string — dotted property names
     // collide ($.a.b from "a.b" and from nested a>b) and a colliding key would
     // let a later result overwrite an earlier one (codex P2 r3).
-    const id = pass.cursor++;
-    if (pass.results === undefined) {
-      pass.tests[id] = { source: pattern.value.source, value };
+    if (pass.collecting) {
+      // Record once per (node, value): revisits of the same pair (array items
+      // sharing an items-schema, composite branches) reuse the single result.
+      let values = pass.byNode?.get(schema);
+      if (!values?.has(value)) {
+        if (!values) {
+          values = new Map();
+          pass.byNode ??= new WeakMap();
+          pass.byNode.set(schema, values);
+        }
+        values.set(value, false);
+        pass.tests.push({ source: pattern.value.source, value, node: schema });
+      }
       return ok();
     }
-    const matched = pass.results[id];
+    const matched = pass.byNode?.get(schema)?.get(value);
     if (matched === undefined) {
       return invalid(`${path} could not be verified within the pattern time budget; pattern not verified`);
     }
@@ -132,38 +142,6 @@ async function validateString(value: unknown, schema: Record<string, unknown>, p
   return ok();
 }
 
-function validateNumber(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
-  for (const key of ["minimum", "maximum", "multipleOf"] as const) {
-    if (key in schema && !finiteNumber(schema[key])) return invalid(`${path} schema ${key} must be a finite number`);
-  }
-  for (const key of ["exclusiveMinimum", "exclusiveMaximum"] as const) {
-    if (key in schema && typeof schema[key] !== "number" && typeof schema[key] !== "boolean") {
-      return invalid(`${path} schema ${key} must be a number or boolean`);
-    }
-  }
-  if (typeof value !== "number" || !Number.isFinite(value)) return ok();
-  if (typeof schema.minimum === "number" && value < schema.minimum) return invalid(`${path} must be >= ${schema.minimum}`);
-  if (typeof schema.maximum === "number" && value > schema.maximum) return invalid(`${path} must be <= ${schema.maximum}`);
-  if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) {
-    return invalid(`${path} must be > ${schema.exclusiveMinimum}`);
-  }
-  if (schema.exclusiveMinimum === true && typeof schema.minimum === "number" && value <= schema.minimum) {
-    return invalid(`${path} must be > ${schema.minimum}`);
-  }
-  if (typeof schema.exclusiveMaximum === "number" && value >= schema.exclusiveMaximum) {
-    return invalid(`${path} must be < ${schema.exclusiveMaximum}`);
-  }
-  if (schema.exclusiveMaximum === true && typeof schema.maximum === "number" && value >= schema.maximum) {
-    return invalid(`${path} must be < ${schema.maximum}`);
-  }
-  if (typeof schema.multipleOf === "number" && schema.multipleOf <= 0) {
-    return invalid(`${path} schema multipleOf must be greater than 0`);
-  }
-  if (typeof schema.multipleOf === "number" && !isMultipleOf(value, schema.multipleOf)) {
-    return invalid(`${path} must be a multiple of ${schema.multipleOf}`);
-  }
-  return ok();
-}
 
 async function validateObject(value: unknown, schema: Record<string, unknown>, path: string, stack: Set<Record<string, unknown>>, pass: PatternPass): Promise<SchemaValidationResult> {
   if (schema.type !== "object" && !isRecord(value)) return ok();

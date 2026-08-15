@@ -143,3 +143,41 @@ export function validateType(value: unknown, schema: Record<string, unknown>, pa
 }
 
 const JSON_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
+
+export function parseJsonResult(text: string): unknown {
+  const trimmed = stripJsonFence(text.trim());
+  return JSON.parse(trimmed) as unknown;
+}
+
+export function validateNumber(value: unknown, schema: Record<string, unknown>, path: string): SchemaValidationResult {
+  for (const key of ["minimum", "maximum", "multipleOf"] as const) {
+    if (key in schema && !finiteNumber(schema[key])) return invalid(`${path} schema ${key} must be a finite number`);
+  }
+  for (const key of ["exclusiveMinimum", "exclusiveMaximum"] as const) {
+    if (key in schema && typeof schema[key] !== "number" && typeof schema[key] !== "boolean") {
+      return invalid(`${path} schema ${key} must be a number or boolean`);
+    }
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) return ok();
+  if (typeof schema.minimum === "number" && value < schema.minimum) return invalid(`${path} must be >= ${schema.minimum}`);
+  if (typeof schema.maximum === "number" && value > schema.maximum) return invalid(`${path} must be <= ${schema.maximum}`);
+  if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) {
+    return invalid(`${path} must be > ${schema.exclusiveMinimum}`);
+  }
+  if (schema.exclusiveMinimum === true && typeof schema.minimum === "number" && value <= schema.minimum) {
+    return invalid(`${path} must be > ${schema.minimum}`);
+  }
+  if (typeof schema.exclusiveMaximum === "number" && value >= schema.exclusiveMaximum) {
+    return invalid(`${path} must be < ${schema.exclusiveMaximum}`);
+  }
+  if (schema.exclusiveMaximum === true && typeof schema.maximum === "number" && value >= schema.maximum) {
+    return invalid(`${path} must be < ${schema.maximum}`);
+  }
+  if (typeof schema.multipleOf === "number" && schema.multipleOf <= 0) {
+    return invalid(`${path} schema multipleOf must be greater than 0`);
+  }
+  if (typeof schema.multipleOf === "number" && !isMultipleOf(value, schema.multipleOf)) {
+    return invalid(`${path} must be a multiple of ${schema.multipleOf}`);
+  }
+  return ok();
+}

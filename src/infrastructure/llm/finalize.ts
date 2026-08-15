@@ -1,7 +1,8 @@
 import type { ModelRouterPort } from "../../application/ports/model-router.ts";
 import { TransformError, type TransformInput } from "../../application/ports/transformer.ts";
 import { findUnsupportedSchemaKeyword, messageForUnsupportedKeyword } from "../../domain/schema-allowlist.ts";
-import { parseJsonResult, validateJsonSchema } from "./json-schema.ts";
+import { parseJsonResult } from "./json-schema-utils.ts";
+import { validateJsonSchema } from "./json-schema.ts";
 import { estimateTokens } from "./tokens.ts";
 
 /**

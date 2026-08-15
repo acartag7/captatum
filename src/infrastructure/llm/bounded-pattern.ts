@@ -19,6 +19,9 @@ export const PATTERN_TEST_BUDGET_MS = 500;
 export interface PatternTest {
   source: string;
   value: string;
+  /** The schema NODE carrying the pattern — pairs the worker result back to
+   *  its (node, value) identity (see json-schema.ts PatternPass). */
+  node: object;
 }
 
 // ESM-safe on every Node 24.x: an `eval: true` worker's module type follows the

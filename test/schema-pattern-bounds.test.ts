@@ -152,3 +152,20 @@ test("collection is independent of composite outcomes (codex P2 r4)", async () =
     "exactly-one violated",
   );
 });
+
+test("results bind to (node, value) identity, not traversal position (codex P2 r5)", async () => {
+  // The positional design failed OPEN here: collection recorded all three
+  // patterns, but the check pass short-circuited branch 1 after `not`,
+  // so branch 2 consumed branch 1's skipped result and falsely matched.
+  const schema = {
+    anyOf: [
+      { not: { type: "string", pattern: "^b$" }, type: "string", pattern: "^b$" },
+      { type: "string", pattern: "^x$" },
+    ],
+  };
+  // "b": branch 1 — inner pattern MATCHES, so `not` fails the branch; branch 2's
+  // own ^x$ must be evaluated against ITS result (false) — anyOf fails overall.
+  assert.equal((await validateJsonSchema("b", schema)).valid, false);
+  // "x": branch 2 matches on its own result — valid.
+  assert.equal((await validateJsonSchema("x", schema)).valid, true);
+});
