@@ -9,6 +9,7 @@ import {
   EXTRACTION_GAP_BYTES,
   EMPTY_DOM_BYTES,
   DOM_TEXT_PRESENT,
+  buildRenderDiagnostics,
 } from "../src/application/use-cases/render-diagnostics.ts";
 import { maybeRender } from "../src/application/use-cases/render.ts";
 import type { RenderOutput, RenderPort } from "../src/application/ports/renderer.ts";
@@ -20,6 +21,23 @@ test("#154 redactEgressHost: registrable domain kept; IP / single-label / IPv6 â
   assert.equal(redactEgressHost("93.184.216.34"), "[ip-literal]", "public IPv4 never leaks");
   assert.equal(redactEgressHost("localhost"), "[ip-literal]", "single-label redacted");
   assert.equal(redactEgressHost("[::1]"), "[ip-literal]", "IPv6 literal redacted");
+});
+
+test("popup-closed counts toward blockedRequests in render diagnostics (codex P2 r2)", () => {
+  // A page that opened popups and then failed the render: the closed-popups
+  // control fired and the blocked tally must report it alongside the others.
+  const fail = {
+    rendered: false,
+    code: "render_error",
+    message: "x",
+    actions: [
+      { type: "popup-closed", reason: "popups disabled", url: "http://popup.test/x" },
+      { type: "request-blocked", reason: "private_address", url: "http://10.0.0.1/a", resourceType: "script" },
+      { type: "service-workers-disabled", reason: "context serviceWorkers=block" },
+    ],
+  } as unknown as RenderOutput;
+  const diagnostics = buildRenderDiagnostics(fail);
+  assert.equal(diagnostics.blockedRequests, 2, "popup-closed + request-blocked; service-workers is not a block");
 });
 
 test("#154 classifyRenderFailure: !rendered â†’ render-error", () => {
