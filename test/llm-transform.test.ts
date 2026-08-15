@@ -864,6 +864,8 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     // swallow a later credential pair), base64 padding and all
     "?a=1&b=2&api_key=XYZ",
     "?sig=abc123==",
+    "?access_token==SECRET", // a value BEGINNING with = (URLSearchParams reads "=SECRET")
+    "?api_key=a=b=c", // and = inside values generally
     "page?a=1&amp;access_token=OPAQUE6",
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
@@ -903,6 +905,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "/track?token=xyz&expires=99",
     "/docs/getting-started",
     "what? access the token section",
+    "/cb?access_token=", // an EMPTY value is not a credential (nonempty-value rule)
     "//example.com/public", // network-path to a clean public host
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
     "docs //example.com, chapter 2", // punctuation on a public host stays clean too
