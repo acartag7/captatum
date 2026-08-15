@@ -79,7 +79,10 @@ describe("Tier-3 popup egress (real Chromium)", { skip: !chromiumReady }, () => 
     assert.equal(ctrl.status, 200);
     const baseline = hits.length;
 
-    const renderer = new PlaywrightRenderer({ chromiumSandbox: true });
+    // chromiumSandbox off: CI Linux runners can't run Chromium's setuid sandbox
+    // (same convention as fixtures.test.ts — the sandbox matters in the deployed
+    // runtime, not in this egress test; interception is sandbox-independent).
+    const renderer = new PlaywrightRenderer({ chromiumSandbox: false });
     const out = await renderer.render({
       url: "http://mainpage.test/", maxBytes: 2 * 1024 * 1024, timeoutMs: 20000, maxHops: 5, fetcher,
     });
