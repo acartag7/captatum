@@ -175,12 +175,12 @@ export function detectSensitiveTransformInput(input: {
   // at a private host — must not egress because the parser gave up.
   const headTruncated = content.length > MAX_CONTENT_SCAN;
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
-    // Trim trailing prose punctuation + unbalanced closers BEFORE classifying:
-    // Node accepts characters like ',', '!', ')' inside hostnames, so
-    // //10.0.0.5, parses with hostname "10.0.0.5," — not a private IP — and
-    // the internal reference egressed (codex P1). Same normalization the
-    // absolute-URL scan applies.
-    const authority = stripTrailingProseClosers((match[1] ?? "").replace(/[.,;:!?]+$/, ""));
+    // NO trailing-punctuation trim: the hostname whitelist already excludes
+    // every non-hostname character (comma, closers, quotes), `.` is stripped by
+    // internalHostReason's own trailing-dot handling, and trimming `:` would
+    // turn an empty/double-colon port (example.com:: — malformed, fail-closed)
+    // into a clean public host (codex P2).
+    const authority = match[1] ?? "";
     const url = `https://${authority}`;
     try {
       new URL(url);

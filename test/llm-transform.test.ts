@@ -854,6 +854,8 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     // private host behind an invalid port must not egress (codex P1 r5)
     "//alice:correcthorse@10.0.0.5:99999/file",
     "//example.com:99999/x",
+    "//example.com::/x", // empty/double-colon port is malformed — NO colon trim may rescue it
+    "//internal.corp:/x",
     // a credential after a >256-char relative path (codex P1 r3)
     `/${"x".repeat(300)}?access_token=OPAQUE4`,
     // and after a >2 048-char path — no per-reference cap may exist (codex P1 r5)
@@ -931,6 +933,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//example.com/public", // network-path to a clean public host
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
     "docs //example.com, chapter 2", // punctuation on a public host stays clean too
+    "//example.com:8080/x", // a VALID port still parses and stays clean
     "see `//example.com/api` docs", // ... backtick-wrapped public host too
     "|//example.com/api|", // ... table-cell public host
     "le lien «//example.com/api» ici", // ... guillemet-wrapped public host
