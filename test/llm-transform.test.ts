@@ -875,6 +875,11 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     `https://x/cb?access_${"\r"}token=SECRET`, // the ABSOLUTE scanner's sibling
     `https://cdn/f?x-goog-${"\n"}signature=abc123`,
     "?api_key=a=b=c", // and = inside values generally
+    // whitespace-prefixed values: URL parsers percent-encode the leading space
+    // and expose a NONEMPTY credential (codex P1)
+    "/cb?access_token= SECRET",
+    "/cb#access_token= SECRET",
+    "?api_key=  KEY1",
     "page?a=1&amp;access_token=OPAQUE6",
   ]) {
     const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
@@ -980,6 +985,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "/docs/getting-started",
     "what? access the token section",
     "/cb?access_token=", // an EMPTY value is not a credential (nonempty-value rule)
+    "/track?token= xyz", // a generic key with a ws-prefixed value stays generic
     "/cb?access token=SECRET", // SPACE is not URL-ignored — two keys, neither credential-shaped
     "//example.com/public", // network-path to a clean public host
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
