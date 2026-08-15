@@ -856,6 +856,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//example.com:99999/x",
     "//example.com::/x", // empty/double-colon port is malformed — NO colon trim may rescue it
     "//internal.corp:/x",
+    "//[fd00::1%25eth0]/docs", // RFC 6874 zone: valid literal, must classify (not malformed)
     // a credential after a >256-char relative path (codex P1 r3)
     `/${"x".repeat(300)}?access_token=OPAQUE4`,
     // and after a >2 048-char path — no per-reference cap may exist (codex P1 r5)
@@ -934,6 +935,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
     "docs //example.com, chapter 2", // punctuation on a public host stays clean too
     "//example.com:8080/x", // a VALID port still parses and stays clean
+    "//[2606:4700::1111%25eth0]/docs", // ... and a zone-identified PUBLIC IPv6 literal
     "see `//example.com/api` docs", // ... backtick-wrapped public host too
     "|//example.com/api|", // ... table-cell public host
     "le lien «//example.com/api» ici", // ... guillemet-wrapped public host

@@ -176,14 +176,14 @@ export function detectSensitiveTransformInput(input: {
   const headTruncated = content.length > MAX_CONTENT_SCAN;
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
     // NO trailing-punctuation trim: the hostname whitelist already excludes
-    // every non-hostname character (comma, closers, quotes), `.` is stripped by
-    // internalHostReason's own trailing-dot handling, and trimming `:` would
-    // turn an empty/double-colon port (example.com:: — malformed, fail-closed)
-    // into a clean public host (codex P2).
+    // non-hostname characters, `.` is stripped by internalHostReason itself, and
+    // trimming `:` would rescue a malformed empty/double-colon port (codex P2).
     const authority = match[1] ?? "";
     const url = `https://${authority}`;
     try {
-      new URL(url);
+      // RFC 6874 zone identifiers (%25eth0) throw in a raw parse but the helpers
+      // strip them — validate the same normalized form the classifiers see.
+      new URL(url.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]"));
     } catch {
       // An authority sliced by the 500 KB head boundary is NOT malformed: the
       // complete reference (e.g. //[2606:4700::1111]/docs continuing past the
