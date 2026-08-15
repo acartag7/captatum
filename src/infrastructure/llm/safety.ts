@@ -59,35 +59,22 @@ const SENSITIVE_HEADER_PATTERNS = [
  *  owns '[' at the host position, so allowing it in a normal path is safe. Bounded vs ReDoS. */
 const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>]*)?|https?:\/\/[^\s"'<>]{1,512}/gi;
 
-/** Relative credential URLs — the absolute-literal scanner's blind spot (executed
- *  2026-08-15): `/cb#access_token=…` and `/download?sig=…` egressed to a hosted LLM
- *  where the absolute spelling was flagged. TWO anchor scans, neither consuming a
- *  PATH (path caps previously dropped credentials after long generated paths —
- *  codex P1 r5 — and any cap is a bypass waiting for a longer URL):
- *  (1) KEY-ANCHORED: a `?`/`#`/`&` followed by key=shape — the credential key set
- *      decides, wherever the reference starts, however long its path was. Keys are
- *      bounded ({1,64}: no credential key is longer) and values match a prefix
- *      (length beyond the bound is irrelevant — the KEY is the signal). HTML-escaped
- *      separators are normalized first, as the absolute scanner does.
- *  (2) NETWORK-PATH: an `//authority` reference CARRIES a host, so the host checks
- *      apply (userinfo credential, internal host, loopback) via a dummy scheme —
- *      anchored to a reference BOUNDARY — start-of-string or ANY character that
- *      legitimately precedes a reference in prose, Markdown, or code: whitespace,
- *      quotes and backticks (inline code), parens/brackets/braces/angle brackets,
- *      table pipes, emphasis (*, _, ~), blockquote '>', and the punctuation = ; , : ! ?
- *      (YAML values, list commas), plus Unicode quotes and dashes (smart quotes,
- *      guillemets, en/em dashes). Sibling-swept as a CLASS after pipes was the
- *      fifth consecutive one-character boundary finding. The AUTHORITY is captured
- *      from a hostname-legality WHITELIST (letters, digits, dot, dash, colon, @,
- *      IPv6 brackets, %) — any other character TERMINATES the reference, so
- *      typographic punctuation and the prose following it (//10.0.0.5—then) can
- *      never reach the classifier; Node would punycode such a tail into a
- *      non-private hostname and the reference egressed (codex P1).: ordinary doubled slashes must not match, because Node parses bare
- *      numbers as IPv4 authorities and Python floor division (value//10) or a //
- *      inside an absolute URL's path would flag public pages (codex P1).
- * Both are linear, single-pass, bounded by the 500 KB head. The #44 ad-noise
- *  carve-out is preserved: only the credential key set flags, never generic
- *  token/key/auth/expires. */
+/** Relative credential references — the absolute-only scanner's blind spot
+ *  (executed 2026-08-15: `/cb#access_token=…` egressed where the absolute
+ *  spelling flagged). Two linear scans over the 500 KB head:
+ *  (1) KEY-ANCHORED — any ?/#/& followed by credential-key=value, wherever the
+ *      reference starts, of any path length (a path cap is a bypass waiting for
+ *      a longer URL). Values match a prefix; = inside a value cannot hide the
+ *      next &-separated pair; entity separators normalized first.
+ *  (2) NETWORK-PATH — `//authority` carries a host, so host checks apply. The
+ *      boundary is any legitimate left-adjacent context (whitespace, quotes,
+ *      backticks, brackets/parens/braces/angles, pipes, emphasis, blockquote,
+ *      = ; , : ! ?, Unicode quotes/dashes — swept as a class); the AUTHORITY is
+ *      captured from a hostname-legality whitelist (alnum . - : @ [ ] %), so any
+ *      other character terminates it — typographic tails and following prose can
+ *      never reach the classifier (Node would punycode them into non-private).
+ *  The #44 carve-out holds: only the credential key set flags, and a clean
+ *  public //host stays unflagged. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=([^\s"'<>&#]{1,512})/g;
 const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([A-Za-z0-9.\-:@\[\]%]{1,2048})/g;
 
@@ -145,7 +132,15 @@ export function detectSensitiveTransformInput(input: {
   // `auth`/`expires`) that caused the #44 news-page false-positive regression. The credential
   // patterns above already scanned the FULL content.
   const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
-  for (const match of head.matchAll(SIGNED_URL_IN_CONTENT)) {
+  // URL-ignored ASCII whitespace (tab, LF, CR — NOT space, which URLs encode):
+  // Node's parser strips these, so a URL line-wrapped in a terminal or log is
+  // ONE url to the browser (https://x/cb?access_\ntoken=… exposes access_token)
+  // while a whitespace-delimited scan sees a truncated key. The absolute and
+  // key scans run on the stripped text; the network-path scan keeps the RAW
+  // head — stripping newlines there would fuse adjacent references and eat
+  // their boundaries.
+  const unwrapped = head.replace(/[\t\n\r]/g, "");
+  for (const match of unwrapped.matchAll(SIGNED_URL_IN_CONTENT)) {
     // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup example — resolves
     // to the READER's machine, not a leaked endpoint) is not flagged. RFC1918 / 169.254.169.254 /
     // .corp / .internal are. A credential ANYWHERE on the URL — query key, fragment key (HTML-escaped
@@ -168,7 +163,7 @@ export function detectSensitiveTransformInput(input: {
   }
   // (1) credential KEY anywhere a relative reference can carry one — anchored
   // on the ?/#/& separator, so the path before it (of ANY length) is irrelevant.
-  const normalizedHead = head.replace(/&(amp|#38|#x26);/gi, "&");
+  const normalizedHead = unwrapped.replace(/&(amp|#38|#x26);/gi, "&");
   for (const match of normalizedHead.matchAll(RELATIVE_CREDENTIAL_KEY)) {
     const key = match[1]?.toLowerCase() ?? "";
     if (CONTENT_CREDENTIAL_QUERY_KEYS.has(key)) {

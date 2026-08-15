@@ -865,6 +865,12 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "?a=1&b=2&api_key=XYZ",
     "?sig=abc123==",
     "?access_token==SECRET", // a value BEGINNING with = (URLSearchParams reads "=SECRET")
+    // URL-ignored ASCII whitespace (tab/LF/CR — NOT space) inside a key: Node's
+    // parser strips it, so a line-wrapped URL exposes the full key (codex P1)
+    `/cb?access_${"\n"}token=SECRET`,
+    `/cb?x-amz-${"\t"}signature=SECRET`,
+    `https://x/cb?access_${"\r"}token=SECRET`, // the ABSOLUTE scanner's sibling
+    `https://cdn/f?x-goog-${"\n"}signature=abc123`,
     "?api_key=a=b=c", // and = inside values generally
     "page?a=1&amp;access_token=OPAQUE6",
   ]) {
@@ -906,6 +912,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     "/docs/getting-started",
     "what? access the token section",
     "/cb?access_token=", // an EMPTY value is not a credential (nonempty-value rule)
+    "/cb?access token=SECRET", // SPACE is not URL-ignored — two keys, neither credential-shaped
     "//example.com/public", // network-path to a clean public host
     "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
     "docs //example.com, chapter 2", // punctuation on a public host stays clean too
