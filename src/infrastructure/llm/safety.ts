@@ -50,17 +50,18 @@ const SENSITIVE_HEADER_PATTERNS = [
 
 const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>]*)?|https?:\/\/[^\s"'<>]{1,512}/gi;
 
-/** Relative credential references — the absolute-only scanner's blind spot
- *  (executed 2026-08-15). (1) KEY-ANCHORED: any ?/#/& + credential-key=value,
- *  any path length; values match a prefix; = in a value can't hide the next
- *  &-separated pair; entity separators normalized. (2) NETWORK-PATH: //authority
- *  carries a host; boundary = any legitimate left-adjacent context (whitespace,
- *  quotes/backticks, brackets, pipes, emphasis, =;,:!?|>*_~, Unicode quotes and
- *  dashes); the authority is captured from a hostname-legality whitelist, so any
- *  other character terminates it. #44 carve-out holds: generic keys and clean
- *  public //hosts never flag. */
+/** Relative-credential scans: (1) KEY-anchored — any ?/#/& + credential-key=value,
+ *  any path length, values match a prefix, entity separators normalized;
+ *  (2) NETWORK-PATH — //authority (WHATWG separator runs of 2+ mixed /\, or a
+ *  special scheme + 0/1 separators cross-scheme) carries a host; boundary = any
+ *  legitimate left-adjacent context; terminators stop the capture so references
+ *  never fuse; interpretation is 100% Node's parser (IDN/dots/zones/shorthand).
+ *  #44 carve-out: generic keys and clean public //hosts never flag. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=[\t ]*([^\s"'<>&#]{1,512})/g;
 const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~“”‘’«»–—―])[\/\\]{2,}([^\s"'<>`\/?#\\\–\—\―\“\”\‘\’\«\»]{1,2048})/g;
+// WHATWG special relative-or-authority: scheme + 0/1 separators = an AUTHORITY
+// cross-scheme (http:\\pass@10.0.0.5/x vs an https page), a PATH same-scheme.
+const SCHEME_PREFIXED_AUTHORITY = /(?:https?|wss?|ftp|file):[\/\\]?([^\s"'<>`\/?#\\\u2013\u2014\u2015\u201C\u201D\u2018\u2019\u00AB\u00BB]{1,2048})/gi;
 
 const MAX_CONTENT_SCAN = 500_000;
 
@@ -111,18 +112,11 @@ export function detectSensitiveTransformInput(input: {
     if (pattern.test(content)) return { sensitive: true, reason: "content_header_dump" };
   }
   const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
-  // URL-ignored ASCII whitespace (tab/LF/CR, NOT space): Node's parser strips
-  // these, so a line-wrapped URL (?access_\ntoken=…) exposes the full key to
-  // the browser while a whitespace-delimited scan sees a truncated one. The
-  // absolute and key scans run stripped; the network-path scan keeps the RAW
-  // head — stripping newlines there would fuse adjacent references.
+  // URL-ignored tab/LF/CR (not space) is stripped before all three scans — a
+  // line-wrapped reference is one reference to the parser; terminators prevent fusion.
   const unwrapped = head.replace(/[\t\n\r]/g, "");
   for (const match of unwrapped.matchAll(SIGNED_URL_IN_CONTENT)) {
-    // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup
-    // example — resolves to the READER's machine) is not flagged; RFC1918 /
-    // 169.254.169.254 / .corp / .internal are. A credential ANYWHERE on the URL —
-    // query key, fragment key, userinfo, or an OAuth code on a loopback redirect —
-    // is checked BEFORE the exemption. Prose punctuation/closers trimmed.
+    // allowLoopback: docs-example loopback links exempt; credentials anywhere on the URL checked first; prose trimmed.
     let url = stripTrailingProseClosers(match[0].replace(/[.,;:!?]+$/, ""));
     const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? fragmentCredentialReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
@@ -140,8 +134,22 @@ export function detectSensitiveTransformInput(input: {
       return { sensitive: true, reason: "content_embedded_signed_or_tokenized_url" };
     }
   }
-  // (2) network-path references: a host is present, so host checks apply.
   const headTruncated = content.length > MAX_CONTENT_SCAN; // drives the edge check below
+  const sourceScheme = input.sourceUrl?.slice(0, input.sourceUrl.indexOf(":")) ?? "";
+  for (const match of unwrapped.matchAll(SCHEME_PREFIXED_AUTHORITY)) {
+    if (match[0].slice(0, match[0].indexOf(":")).toLowerCase() === sourceScheme) continue;
+    const trimmed = stripTrailingProseClosers((match[1] ?? "").replace(/[.,;!?]+$/, ""));
+    const url = `https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
+    try {
+      new URL(url);
+    } catch {
+      return { sensitive: true, reason: "content_embedded_malformed_network_path" };
+    }
+    const reason = userinfoCredentialReason(url)
+      ?? loopbackOAuthCredentialReason(url)
+      ?? internalHostReason(url, true);
+    if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
+  }
   for (const match of unwrapped.matchAll(RELATIVE_NETWORK_PATH)) {
     // Hostname-whitelist capture; NO punctuation trim (trimming ':' would
     // rescue a malformed empty/double-colon port).
@@ -188,14 +196,11 @@ export function detectSensitiveTransformInput(input: {
   return { sensitive: false };
 }
 
-/** Evidence CONCLUSIVE in a SLICED host. A host is TERMINATED (its text cannot
- *  extend past the cap) only by a closed ] (bracketed) or a : port separator —
- *  otherwise ANY classification is a phantom guess (//10 completes to the
- *  public 100.0.0.1; //service.internal to service.internal.com) and defers.
- *  Terminated hosts classify via the ordinary helpers. The ONE unterminated
- *  form that stays conclusive is an unclosed v6 bracket whose hex prefix
- *  cannot escape its block: [fd/[fc (ULA — fd00::/8), [fe8-feb (link-local).
- *  Loopback is the #127 content exemption; ambiguous forms defer. */
+/** Evidence CONCLUSIVE in a SLICED host (a parse of the prefix is a phantom —
+ *  never classify phantoms): terminated hosts (closed ] or : port separator)
+ *  classify via helpers; unclosed [fd/[fc (ULA) and [fe8-feb (link-local)
+ *  brackets are hex-inescapable; everything else defers. Loopback keeps the #127
+ *  content exemption. */
 function conclusiveEvidence(raw: string): string | undefined {
   if (raw.startsWith("[")) {
     if (raw.includes("]")) {

@@ -1033,6 +1033,30 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
         assert.equal(r.sensitive, true, content);
       }
     }
+    // SCHEME-PREFIXED authorities (WHATWG special relative-or-authority):
+    // a special scheme + 0/1 separators is an AUTHORITY cross-scheme
+    // (http:\\pass@10.0.0.5/x resolves against an https page) but a PATH
+    // same-scheme — gated on the source url's scheme
+    {
+      const B = String.fromCharCode(92);
+      for (const content of [
+        `leak http:${B}alice:correcthorse@10.0.0.5/x`,
+        "leak http:/alice:pass@10.0.0.5/x",
+        "see http:10.0.0.5/x here",
+        "see http:service.internal/y here",
+      ]) {
+        const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+        assert.equal(r.sensitive, true, content);
+      }
+      for (const content of [
+        "see https:10.0.0.5/x on an https page", // SAME scheme: a path, not an authority
+        `see https:${B}docs/path`,
+        "see http:example.com/api here", // cross-scheme but public
+      ]) {
+        const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+        assert.equal(r.sensitive, false, content);
+      }
+    }
     // prose negatives: Windows drive paths (single backslashes — no pair) stay
     // clean. A LaTeX-style \[...] after a colon DOES conservatively flag as a
     // malformed bracketed authority (fail-closed → raw, no egress) — the same
