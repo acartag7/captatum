@@ -641,10 +641,15 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   and URL-ignored tab/LF/CR may appear anywhere inside the reference (Node
   strips them from separators and hostnames alike) — all three scans run on the
   whitespace-normalized head, and the `/ \ ? #` terminators keep adjacent
-  references from fusing. Interpretation of the captured authority is 100%
-  Node's URL parser (IDN, Unicode dot variants, IPv6 zones, shorthand all
-  normalize as the browser sees them); only the boundary and the capture are
-  ours. The
+  references from fusing. A third scan covers SCHEME-PREFIXED authorities
+  (WHATWG "special relative-or-authority"): a special scheme — `http:`, `https:`,
+  `ws:`, `wss:`, `ftp:`, `file:` — followed by ZERO or ONE separator introduces
+  an authority when the scheme DIFFERS from the source url's (cross-scheme
+  `http:10.0.0.5` and `http:\\pass@10.0.0.5/x` resolve to the private host),
+  while the same-scheme form is a path on the current page and is skipped.
+  Interpretation of any captured authority is 100% Node's URL parser (IDN,
+  Unicode dot variants, IPv6 zones, shorthand all normalize as the browser
+  sees them); only the boundaries and the capture are ours. The
   #44 ad-noise carve-out is preserved: only the credential key set flags, never
   generic token/key/auth/expires, and a clean public `//host` reference stays
   unflagged.
