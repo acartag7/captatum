@@ -980,6 +980,30 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     assert.equal(r.sensitive, true);
     assert.equal(r.reason, "content_embedded_malformed_network_path");
   }
+    // WHATWG backslash forms (backslash = slash in special-scheme URLs):
+    // /\user:pass@10.0.0.5/f and \\169.254.169.254\latest resolve to the
+    // private host (with password) exactly like // — the scanner must see them
+    for (const content of [
+      `leak /\u005Calice:correcthorse@10.0.0.5/file`,
+      `see \u005C\u005C169.254.169.254\u005Clatest here`,
+      `cfg \u005C\u005C10.0.0.5\u005Cadmin`,
+      `cfg /\u005C10.0.0.5/x`,
+      `cfg \u005C/10.0.0.5/x`,
+    ]) {
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, content);
+    }
+    // prose negatives: Windows drive paths (single backslashes — no pair) stay
+    // clean. A LaTeX-style \[...] after a colon DOES conservatively flag as a
+    // malformed bracketed authority (fail-closed → raw, no egress) — the same
+    // documented posture as every malformed authority, noted as a #44-class
+    // availability trade-off, not a bypass.
+    for (const content of [
+      `open C:\u005CUsers\u005Carnold\u005Cfile`,
+    ]) {
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, false, content);
+    }
   // The #44 ad-noise carve-out survives: generic keys on relative URLs stay
   // unflagged (public pages are full of /track?token=… ad links).
   for (const content of [
