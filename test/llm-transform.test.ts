@@ -1005,6 +1005,21 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
       const publicContent = mk(` ${B}${B}example.com${B}`) + `docs ` + "b".repeat(300);
       assert.equal(detectSensitiveTransformInput({ content: publicContent, sourceUrl: "https://public.example/a" }).sensitive, false);
     }
+    // ... and THREE or more separators: WHATWG consumes the whole run, so
+    // \\\\169.254.169.254/latest and ///10.0.0.5/x resolve to the internal
+    // host — the pattern must too (codex P1 on #206)
+    {
+      const B = String.fromCharCode(92);
+      for (const content of [
+        `see ${B}${B}${B}169.254.169.254/latest here`,
+        "cfg ///10.0.0.5/x",
+        `cfg ${B}${B}${B}${B}10.0.0.5/x`,
+        `cfg /${B}/10.0.0.5/x`,
+      ]) {
+        const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+        assert.equal(r.sensitive, true, content);
+      }
+    }
     // prose negatives: Windows drive paths (single backslashes — no pair) stay
     // clean. A LaTeX-style \[...] after a colon DOES conservatively flag as a
     // malformed bracketed authority (fail-closed → raw, no egress) — the same
