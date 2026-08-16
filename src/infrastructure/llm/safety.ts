@@ -60,7 +60,7 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *  other character terminates it. #44 carve-out holds: generic keys and clean
  *  public //hosts never flag. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=[\t ]*([^\s"'<>&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~“”‘’«»–—―])(?:[\/\\][\t\n\r]*){2,}([^\s"'<>`\/?#\\\–\—\―\“\”\‘\’\«\»]{1,2048})/g;
+const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~“”‘’«»–—―])(?:[\/\\][\t\n\r]*){2,}([^ "'<>`\/?#\\\–\—\―\“\”\‘\’\«\»]{1,2048})/g;
 
 const MAX_CONTENT_SCAN = 500_000;
 
@@ -151,7 +151,10 @@ export function detectSensitiveTransformInput(input: {
     // dot variants natively. A bounded prose trim (NO colon — trimming ':'
     // would rescue a malformed empty/double-colon port) removes sentence
     // punctuation picked up from running text.
-    const captured = match[1] ?? "";
+    // Node strips URL-ignored tab/LF/CR from hostnames too (\service.\tinternal
+    //  -> service.internal) — allow them in the capture, strip before use. The
+    // / \ ? # terminators still stop the capture, so adjacent references never fuse.
+    const captured = (match[1] ?? "").replace(/[\t\n\r]/g, "");
     const trimmed = stripTrailingProseClosers(captured.replace(/[.,;!?]+$/, ""));
     const atEdge = headTruncated
       && match.index !== undefined

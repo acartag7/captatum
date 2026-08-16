@@ -1022,6 +1022,12 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
         `leak ${B}${String.fromCharCode(13)}${B}alice:pass@10.0.0.5/x`,
         `cfg /${B}${String.fromCharCode(10)}/10.0.0.5/x`,
         `cfg /${String.fromCharCode(9)}/10.0.0.5/x`,
+        // ... and INSIDE the authority: Node strips tab/LF/CR from hostnames
+        // (\\service.\tinternal -> service.internal) — captured then stripped,
+        // never fused (the / terminator still separates references)
+        `see ${B}${B}service.${String.fromCharCode(9)}internal/x here`,
+        `cfg ${B}${B}10.0.${String.fromCharCode(10)}0.5/x`,
+        `leak ${B}${B}alice:pass${String.fromCharCode(13)}@10.0.0.5/x`,
       ]) {
         const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
         assert.equal(r.sensitive, true, content);
