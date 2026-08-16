@@ -993,6 +993,18 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
       const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
       assert.equal(r.sensitive, true, content);
     }
+    // ... including at the 500 KB edge where the PATH (not the host) is sliced:
+    // the authority capture must TERMINATE at the backslash so the already-
+    // complete host classifies (codex P1 on #206)
+    {
+      const B = String.fromCharCode(92);
+      const mk = (t) => "a".repeat(500_000 - t.length) + t;
+      const content = mk(` ${B}${B}169.254.169.254${B}`) + `latest${B}meta-data ` + "b".repeat(300);
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, `edge UNC -> ${JSON.stringify(r)}`);
+      const publicContent = mk(` ${B}${B}example.com${B}`) + `docs ` + "b".repeat(300);
+      assert.equal(detectSensitiveTransformInput({ content: publicContent, sourceUrl: "https://public.example/a" }).sensitive, false);
+    }
     // prose negatives: Windows drive paths (single backslashes — no pair) stay
     // clean. A LaTeX-style \[...] after a colon DOES conservatively flag as a
     // malformed bracketed authority (fail-closed → raw, no egress) — the same
