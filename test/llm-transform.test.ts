@@ -980,6 +980,95 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     assert.equal(r.sensitive, true);
     assert.equal(r.reason, "content_embedded_malformed_network_path");
   }
+    // WHATWG backslash forms (backslash = slash in special-scheme URLs):
+    // /\user:pass@10.0.0.5/f and \\169.254.169.254\latest resolve to the
+    // private host (with password) exactly like // — the scanner must see them
+    for (const content of [
+      `leak /\u005Calice:correcthorse@10.0.0.5/file`,
+      `see \u005C\u005C169.254.169.254\u005Clatest here`,
+      `cfg \u005C\u005C10.0.0.5\u005Cadmin`,
+      `cfg /\u005C10.0.0.5/x`,
+      `cfg \u005C/10.0.0.5/x`,
+    ]) {
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, content);
+    }
+    // ... including at the 500 KB edge where the PATH (not the host) is sliced:
+    // the authority capture must TERMINATE at the backslash so the already-
+    // complete host classifies (codex P1 on #206)
+    {
+      const B = String.fromCharCode(92);
+      const mk = (t) => "a".repeat(500_000 - t.length) + t;
+      const content = mk(` ${B}${B}169.254.169.254${B}`) + `latest${B}meta-data ` + "b".repeat(300);
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, `edge UNC -> ${JSON.stringify(r)}`);
+      const publicContent = mk(` ${B}${B}example.com${B}`) + `docs ` + "b".repeat(300);
+      assert.equal(detectSensitiveTransformInput({ content: publicContent, sourceUrl: "https://public.example/a" }).sensitive, false);
+    }
+    // ... and THREE or more separators: WHATWG consumes the whole run, so
+    // \\\\169.254.169.254/latest and ///10.0.0.5/x resolve to the internal
+    // host — the pattern must too (codex P1 on #206)
+    {
+      const B = String.fromCharCode(92);
+      for (const content of [
+        `see ${B}${B}${B}169.254.169.254/latest here`,
+        "cfg ///10.0.0.5/x",
+        `cfg ${B}${B}${B}${B}10.0.0.5/x`,
+        `cfg /${B}/10.0.0.5/x`,
+        // URL-ignored whitespace INSIDE the separator run (line-wrapped
+        // backslash forms): Node strips tab/LF/CR mid-run and resolves the
+        // private authority — and two newline-separated references must NOT
+        // fuse (each keeps its own boundary) (codex P1 r3 on #206)
+        `leak ${B}${String.fromCharCode(13)}${B}alice:pass@10.0.0.5/x`,
+        `cfg /${B}${String.fromCharCode(10)}/10.0.0.5/x`,
+        `cfg /${String.fromCharCode(9)}/10.0.0.5/x`,
+        // ... and INSIDE the authority: Node strips tab/LF/CR from hostnames
+        // (\\service.\tinternal -> service.internal) — captured then stripped,
+        // never fused (the / terminator still separates references)
+        `see ${B}${B}service.${String.fromCharCode(9)}internal/x here`,
+        `cfg ${B}${B}10.0.${String.fromCharCode(10)}0.5/x`,
+        `leak ${B}${B}alice:pass${String.fromCharCode(13)}@10.0.0.5/x`,
+      ]) {
+        const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+        assert.equal(r.sensitive, true, content);
+      }
+    }
+    // SCHEME-PREFIXED authorities (WHATWG special relative-or-authority):
+    // a special scheme + 0/1 separators is an AUTHORITY cross-scheme
+    // (http:\\pass@10.0.0.5/x resolves against an https page) but a PATH
+    // same-scheme — gated on the source url's scheme
+    {
+      const B = String.fromCharCode(92);
+      for (const content of [
+        `leak http:${B}alice:correcthorse@10.0.0.5/x`,
+        "leak http:/alice:pass@10.0.0.5/x",
+        "see http:10.0.0.5/x here",
+        "see http:service.internal/y here",
+      ]) {
+        const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+        assert.equal(r.sensitive, true, content);
+      }
+      for (const content of [
+        "see https:10.0.0.5/x on an https page", // SAME scheme: a path, not an authority
+        `see https:${B}docs/path`,
+        "see http:example.com/api here", // cross-scheme but public
+      ]) {
+        const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+        assert.equal(r.sensitive, false, content);
+      }
+    }
+    // prose negatives: Windows drive paths (single backslashes — no pair) stay
+    // clean. A LaTeX-style \[...] after a colon DOES conservatively flag as a
+    // malformed bracketed authority (fail-closed → raw, no egress) — the same
+    // documented posture as every malformed authority, noted as a #44-class
+    // availability trade-off, not a bypass.
+    for (const content of [
+      `open C:\u005CUsers\u005Carnold\u005Cfile`,
+      "see //example.com\nalso //example.org docs", // newline-separated refs never fuse
+    ]) {
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, false, content);
+    }
   // The #44 ad-noise carve-out survives: generic keys on relative URLs stay
   // unflagged (public pages are full of /track?token=… ad links).
   for (const content of [

@@ -19,6 +19,7 @@ import {
   signedUrlReason,
   userinfoCredentialReason,
 } from "./sensitive-urls.ts";
+import { scanRelativeReferences } from "./relative-reference-scan.ts";
 
 const SENSITIVE_CREDENTIAL_PATTERNS = [
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/i,
@@ -50,17 +51,13 @@ const SENSITIVE_HEADER_PATTERNS = [
 
 const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[@\/]*)?@)?\[[^\]\s]{1,79}\](?::\d{1,5})?(?:[\/?#][^\s"'<>]*)?|https?:\/\/[^\s"'<>]{1,512}/gi;
 
-/** Relative credential references — the absolute-only scanner's blind spot
- *  (executed 2026-08-15). (1) KEY-ANCHORED: any ?/#/& + credential-key=value,
- *  any path length; values match a prefix; = in a value can't hide the next
- *  &-separated pair; entity separators normalized. (2) NETWORK-PATH: //authority
- *  carries a host; boundary = any legitimate left-adjacent context (whitespace,
- *  quotes/backticks, brackets, pipes, emphasis, =;,:!?|>*_~, Unicode quotes and
- *  dashes); the authority is captured from a hostname-legality whitelist, so any
- *  other character terminates it. #44 carve-out holds: generic keys and clean
- *  public //hosts never flag. */
-const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=[\t ]*([^\s"'<>&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([^\s"'<>`/?#\u2013\u2014\u2015\u201C\u201D\u2018\u2019\u00AB\u00BB]{1,2048})/g;
+/** Relative-credential scans: (1) KEY-anchored — any ?/#/& + credential-key=value,
+ *  any path length, values match a prefix, entity separators normalized;
+ *  (2) NETWORK-PATH — //authority (WHATWG separator runs of 2+ mixed /\, or a
+ *  special scheme + 0/1 separators cross-scheme) carries a host; boundary = any
+ *  legitimate left-adjacent context; terminators stop the capture so references
+ *  never fuse; interpretation is 100% Node's parser (IDN/dots/zones/shorthand).
+ *  #44 carve-out: generic keys and clean public //hosts never flag. */
 
 const MAX_CONTENT_SCAN = 500_000;
 
@@ -111,18 +108,11 @@ export function detectSensitiveTransformInput(input: {
     if (pattern.test(content)) return { sensitive: true, reason: "content_header_dump" };
   }
   const head = content.length > MAX_CONTENT_SCAN ? content.slice(0, MAX_CONTENT_SCAN) : content;
-  // URL-ignored ASCII whitespace (tab/LF/CR, NOT space): Node's parser strips
-  // these, so a line-wrapped URL (?access_\ntoken=…) exposes the full key to
-  // the browser while a whitespace-delimited scan sees a truncated one. The
-  // absolute and key scans run stripped; the network-path scan keeps the RAW
-  // head — stripping newlines there would fuse adjacent references.
+  // URL-ignored tab/LF/CR (not space) is stripped before all three scans — a
+  // line-wrapped reference is one reference to the parser; terminators prevent fusion.
   const unwrapped = head.replace(/[\t\n\r]/g, "");
   for (const match of unwrapped.matchAll(SIGNED_URL_IN_CONTENT)) {
-    // allowLoopback: a public page that LINKS http://localhost:PORT (a docs/setup
-    // example — resolves to the READER's machine) is not flagged; RFC1918 /
-    // 169.254.169.254 / .corp / .internal are. A credential ANYWHERE on the URL —
-    // query key, fragment key, userinfo, or an OAuth code on a loopback redirect —
-    // is checked BEFORE the exemption. Prose punctuation/closers trimmed.
+    // allowLoopback: docs-example loopback links exempt; credentials anywhere on the URL checked first; prose trimmed.
     let url = stripTrailingProseClosers(match[0].replace(/[.,;:!?]+$/, ""));
     const reason = signedUrlReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
       ?? fragmentCredentialReason(url, CONTENT_CREDENTIAL_QUERY_KEYS)
@@ -131,81 +121,10 @@ export function detectSensitiveTransformInput(input: {
       ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
-  // (1) credential KEY anywhere a relative reference can carry one — anchored
-  // on the ?/#/& separator, so the path before it (of ANY length) is irrelevant.
-  const normalizedHead = unwrapped.replace(/&(amp|#38|#x26);/gi, "&");
-  for (const match of normalizedHead.matchAll(RELATIVE_CREDENTIAL_KEY)) {
-    const key = match[1]?.toLowerCase() ?? "";
-    if (CONTENT_CREDENTIAL_QUERY_KEYS.has(key)) {
-      return { sensitive: true, reason: "content_embedded_signed_or_tokenized_url" };
-    }
-  }
-  // (2) network-path references: a host is present, so host checks apply.
-  const headTruncated = content.length > MAX_CONTENT_SCAN;
-  for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
-    // Hostname-whitelist capture; NO punctuation trim (trimming ':' would
-    // rescue a malformed empty/double-colon port).
-    // CAPTURE is terminator-based (the URL grammar's own: whitespace, quotes,
-    // angle brackets, backtick, /, ?, #); INTERPRETATION is 100% Node's parser —
-    // it normalizes IDN (m\u00fcnchen.internal \u2192 xn--\u2026.internal) and Unicode
-    // dot variants natively. A bounded prose trim (NO colon — trimming ':'
-    // would rescue a malformed empty/double-colon port) removes sentence
-    // punctuation picked up from running text.
-    const captured = match[1] ?? "";
-    const trimmed = stripTrailingProseClosers(captured.replace(/[.,;!?]+$/, ""));
-    const atEdge = headTruncated
-      && match.index !== undefined
-      && match.index + match[0].length === head.length;
-    if (atEdge) {
-      // The reference is SLICED by the 500 KB boundary: its completion is
-      // unknown and a URL parse of the prefix is a PHANTOM — never classify a
-      // phantom. Defer, except evidence CONCLUSIVE inside the slice: a complete
-      // user:pass@, or a host TERMINATED by a : port separator / closed ].
-      const atSign = captured.lastIndexOf("@");
-      if (atSign > 0 && captured.slice(0, atSign).includes(":")) {
-        return { sensitive: true, reason: "content_embedded_userinfo_credential" };
-      }
-      const reason = conclusiveEvidence(captured.slice(atSign + 1));
-      if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
-      continue;
-    }
-    try {
-      // RFC 6874 zones (%25eth0) throw raw but helpers strip them — validate
-      // the same normalized form the classifiers see.
-      new URL(`https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]"));
-    } catch {
-      return { sensitive: true, reason: "content_embedded_malformed_network_path" };
-    }
-    const url = `https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
-    const reason = userinfoCredentialReason(url)
-      ?? loopbackOAuthCredentialReason(url)
-      ?? internalHostReason(url, true);
-    if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
-  }
-  return { sensitive: false };
-}
+  const rel = scanRelativeReferences(unwrapped, content.length > MAX_CONTENT_SCAN, input.sourceUrl ?? "");
+  if (rel) return { sensitive: true, reason: rel.reason };
 
-/** Evidence CONCLUSIVE in a SLICED host. A host is TERMINATED (its text cannot
- *  extend past the cap) only by a closed ] (bracketed) or a : port separator —
- *  otherwise ANY classification is a phantom guess (//10 completes to the
- *  public 100.0.0.1; //service.internal to service.internal.com) and defers.
- *  Terminated hosts classify via the ordinary helpers. The ONE unterminated
- *  form that stays conclusive is an unclosed v6 bracket whose hex prefix
- *  cannot escape its block: [fd/[fc (ULA — fd00::/8), [fe8-feb (link-local).
- *  Loopback is the #127 content exemption; ambiguous forms defer. */
-function conclusiveEvidence(raw: string): string | undefined {
-  if (raw.startsWith("[")) {
-    if (raw.includes("]")) {
-      const stripped = raw.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
-      return internalHostReason(`https://${stripped}`, true) ?? undefined;
-    }
-    if (/^\[f[cd]/i.test(raw) || /^\[fe[89ab]/i.test(raw)) return "internal_host";
-    return undefined;
-  }
-  const colon = raw.indexOf(":");
-  if (colon === -1) return undefined; // unterminated — the host text may extend
-  const host = raw.slice(0, colon);
-  return internalHostReason(`https://${host}`, true) ?? undefined;
+  return { sensitive: false };
 }
 
 /** Redact signed/tokenized param values from a URL before display (INFOLEAK-1). HOST-AGNOSTIC
