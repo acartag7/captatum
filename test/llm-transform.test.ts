@@ -916,6 +916,8 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
       " //127.0.0.1:99999", // loopback: the #127 content exemption
       " //alice@10.0.0.5", // username not a secret, host unterminated
       " //example\u3002com", // public host with a dot variant
+      " //m\u00fcnchen.de", // public IDN stays clean
+      " //m\u00fcnchen.internal", " //\u65e5\u672c.internal", // IDN flags MID-CONTENT; at the edge the host is unterminated -> defers (the termination rule)
     ];
     for (const tail of deferred) {
       const r = detectSensitiveTransformInput({ content: mk(tail) + beyond, sourceUrl: "https://public.example/a" });

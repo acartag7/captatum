@@ -60,7 +60,7 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *  other character terminates it. #44 carve-out holds: generic keys and clean
  *  public //hosts never flag. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=[\t ]*([^\s"'<>&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([A-Za-z0-9.\-:@\[\]%\u3002\uFF0E\uFF61]{1,2048})/g;
+const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~\u201C\u201D\u2018\u2019\u00AB\u00BB\u2013\u2014\u2015])\/\/([^\s"'<>`/?#\u2013\u2014\u2015\u201C\u201D\u2018\u2019\u00AB\u00BB]{1,2048})/g;
 
 const MAX_CONTENT_SCAN = 500_000;
 
@@ -145,37 +145,38 @@ export function detectSensitiveTransformInput(input: {
   for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
     // Hostname-whitelist capture; NO punctuation trim (trimming ':' would
     // rescue a malformed empty/double-colon port).
-    // WHATWG dot variants (U+3002 ideographic full stop, U+FF0E fullwidth,
-    //  U+FF61 halfwidth) are hostname DOT separators to Node — normalize them
-    // to ASCII before any classification (codex P1).
-    const authority = (match[1] ?? "").replace(/[\u3002\uFF0E\uFF61]/g, ".");
+    // CAPTURE is terminator-based (the URL grammar's own: whitespace, quotes,
+    // angle brackets, backtick, /, ?, #); INTERPRETATION is 100% Node's parser —
+    // it normalizes IDN (m\u00fcnchen.internal \u2192 xn--\u2026.internal) and Unicode
+    // dot variants natively. A bounded prose trim (NO colon — trimming ':'
+    // would rescue a malformed empty/double-colon port) removes sentence
+    // punctuation picked up from running text.
+    const captured = match[1] ?? "";
+    const trimmed = stripTrailingProseClosers(captured.replace(/[.,;!?]+$/, ""));
     const atEdge = headTruncated
       && match.index !== undefined
       && match.index + match[0].length === head.length;
     if (atEdge) {
       // The reference is SLICED by the 500 KB boundary: its completion is
-      // unknown, and a URL parse of the prefix is a PHANTOM (shorthand
-      // reinterprets "169.254." as the public 169.0.0.254) — never classify a
-      // phantom. Defer, except evidence CONCLUSIVE inside the slice: a
-      // complete user:pass@ (an exposed password), or a host whose every
-      // completion is internal (see conclusiveEvidence).
-      const atSign = authority.lastIndexOf("@");
-      if (atSign > 0 && authority.slice(0, atSign).includes(":")) {
+      // unknown and a URL parse of the prefix is a PHANTOM — never classify a
+      // phantom. Defer, except evidence CONCLUSIVE inside the slice: a complete
+      // user:pass@, or a host TERMINATED by a : port separator / closed ].
+      const atSign = captured.lastIndexOf("@");
+      if (atSign > 0 && captured.slice(0, atSign).includes(":")) {
         return { sensitive: true, reason: "content_embedded_userinfo_credential" };
       }
-      const reason = conclusiveEvidence(authority.slice(atSign + 1));
+      const reason = conclusiveEvidence(captured.slice(atSign + 1));
       if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
       continue;
     }
-    let url = `https://${authority}`;
     try {
-      // RFC 6874 zones (%25eth0) throw raw but helpers strip them — validate the
-      // same normalized form the classifiers see.
-      new URL(url.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]"));
+      // RFC 6874 zones (%25eth0) throw raw but helpers strip them — validate
+      // the same normalized form the classifiers see.
+      new URL(`https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]"));
     } catch {
       return { sensitive: true, reason: "content_embedded_malformed_network_path" };
     }
-    url = url.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
+    const url = `https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
     const reason = userinfoCredentialReason(url)
       ?? loopbackOAuthCredentialReason(url)
       ?? internalHostReason(url, true);
