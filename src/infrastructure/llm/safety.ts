@@ -19,6 +19,7 @@ import {
   signedUrlReason,
   userinfoCredentialReason,
 } from "./sensitive-urls.ts";
+import { scanRelativeReferences } from "./relative-reference-scan.ts";
 
 const SENSITIVE_CREDENTIAL_PATTERNS = [
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/i,
@@ -125,74 +126,9 @@ export function detectSensitiveTransformInput(input: {
       ?? internalHostReason(url, true);
     if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
   }
-  // (1) credential KEY anywhere a relative reference can carry one — anchored
-  // on the ?/#/& separator, so the path before it (of ANY length) is irrelevant.
-  const normalizedHead = unwrapped.replace(/&(amp|#38|#x26);/gi, "&");
-  for (const match of normalizedHead.matchAll(RELATIVE_CREDENTIAL_KEY)) {
-    const key = match[1]?.toLowerCase() ?? "";
-    if (CONTENT_CREDENTIAL_QUERY_KEYS.has(key)) {
-      return { sensitive: true, reason: "content_embedded_signed_or_tokenized_url" };
-    }
-  }
-  const headTruncated = content.length > MAX_CONTENT_SCAN; // drives the edge check below
-  const sourceScheme = input.sourceUrl?.slice(0, input.sourceUrl.indexOf(":")) ?? "";
-  for (const match of unwrapped.matchAll(SCHEME_PREFIXED_AUTHORITY)) {
-    if (match[0].slice(0, match[0].indexOf(":")).toLowerCase() === sourceScheme) continue;
-    const trimmed = stripTrailingProseClosers((match[1] ?? "").replace(/[.,;!?]+$/, ""));
-    const url = `https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
-    try {
-      new URL(url);
-    } catch {
-      return { sensitive: true, reason: "content_embedded_malformed_network_path" };
-    }
-    const reason = userinfoCredentialReason(url)
-      ?? loopbackOAuthCredentialReason(url)
-      ?? internalHostReason(url, true);
-    if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
-  }
-  for (const match of unwrapped.matchAll(RELATIVE_NETWORK_PATH)) {
-    // Hostname-whitelist capture; NO punctuation trim (trimming ':' would
-    // rescue a malformed empty/double-colon port).
-    // CAPTURE is terminator-based (the URL grammar's own: whitespace, quotes,
-    // angle brackets, backtick, /, ?, #); INTERPRETATION is 100% Node's parser —
-    // it normalizes IDN (m\u00fcnchen.internal \u2192 xn--\u2026.internal) and Unicode
-    // dot variants natively. A bounded prose trim (NO colon — trimming ':'
-    // would rescue a malformed empty/double-colon port) removes sentence
-    // punctuation picked up from running text.
-    // Node strips URL-ignored tab/LF/CR from hostnames too (\service.\tinternal
-    //  -> service.internal) — allow them in the capture, strip before use. The
-    // / \ ? # terminators still stop the capture, so adjacent references never fuse.
-    const captured = (match[1] ?? "").replace(/[\t\n\r]/g, "");
-    const trimmed = stripTrailingProseClosers(captured.replace(/[.,;!?]+$/, ""));
-    const atEdge = headTruncated
-      && match.index !== undefined
-      && match.index + match[0].length === unwrapped.length;
-    if (atEdge) {
-      // The reference is SLICED by the 500 KB boundary: its completion is
-      // unknown and a URL parse of the prefix is a PHANTOM — never classify a
-      // phantom. Defer, except evidence CONCLUSIVE inside the slice: a complete
-      // user:pass@, or a host TERMINATED by a : port separator / closed ].
-      const atSign = captured.lastIndexOf("@");
-      if (atSign > 0 && captured.slice(0, atSign).includes(":")) {
-        return { sensitive: true, reason: "content_embedded_userinfo_credential" };
-      }
-      const reason = conclusiveEvidence(captured.slice(atSign + 1));
-      if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
-      continue;
-    }
-    try {
-      // RFC 6874 zones (%25eth0) throw raw but helpers strip them — validate
-      // the same normalized form the classifiers see.
-      new URL(`https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]"));
-    } catch {
-      return { sensitive: true, reason: "content_embedded_malformed_network_path" };
-    }
-    const url = `https://${trimmed}`.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
-    const reason = userinfoCredentialReason(url)
-      ?? loopbackOAuthCredentialReason(url)
-      ?? internalHostReason(url, true);
-    if (reason) return { sensitive: true, reason: `content_embedded_${reason}` };
-  }
+  const rel = scanRelativeReferences(unwrapped, content.length > MAX_CONTENT_SCAN, input.sourceUrl ?? "");
+  if (rel) return { sensitive: true, reason: rel.reason };
+
   return { sensitive: false };
 }
 
