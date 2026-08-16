@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.20.2] — 2026-08-16
+
+Security-hardening patch following a full Level-3 adversarial assessment
+(executed PoCs against the real deployment). Hosted rendering works again —
+v0.20.0 accidentally broke every hosted Tier-3 render at the CDP connection —
+and four classes of content-exfiltration and event-loop-stall bugs are closed.
+
+- **fix(render): hosted Tier-3 rendering works again.** Since v0.20.0 every
+  hosted render failed at `connectOverCDP` (Chromium rejects non-IP `Host`
+  headers); the gateway now dials the browser workload at its resolved address.
+  JS-shell pages render again instead of silently degrading to `render_error`.
+- **fix(render): the Tier-3 browser can no longer egress on its own.** Popups
+  (including popups-of-popups) escaped request interception entirely; every new
+  page in the render context is now intercepted and closed on sight, and
+  WebRTC's direct UDP and TCP paths are disabled — the "the browser never makes
+  its own egress" guarantee holds again on every deployment flavor.
+- **fix(safety): credential-bearing references in page content can no longer
+  slip past the hosted-LLM egress gate.** Relative URLs (`/cb#access_token=…`),
+  any path length, WHATWG backslash spellings (`\\host`, `/\user:pass@host`),
+  line-wrapped references, scheme-prefixed forms (`http:10.0.0.5` cross-scheme),
+  IDN hosts, and Unicode dot variants are all recognized; malformed references
+  fail closed.
+- **fix(extract): caller-supplied regex patterns are validated before any
+  fetch/LLM spend and executed under a wall-clock budget.** A
+  catastrophically-backtracking `pattern` could stall the entire event loop for
+  minutes from one request; patterns now run on a worker with a hard budget,
+  and invalid ones are rejected at the input boundary.
+- **fix(deps): every published advisory closed — `pnpm audit --prod` is
+  clean.** find-my-way, fast-uri, hono, @hono/node-server, ip-address, and
+  body-parser are pinned at their minimum fixing versions (ledger-mandated;
+  the hono exception is recorded per-package with its GHSAs).
+
+Checks: exact-head CI passed syntax, line limits, type checking, the full unit
+suite, integration fixtures (real Chromium, including a new popup-egress
+regression), and the process guard. Every fix carries a regression test that
+fails with the fix reverted; executed attack matrices are preserved in the
+assessment vault.
+
 ## [0.20.1] — 2026-07-29
 
 Hosted connectors that support Client ID Metadata Documents can authenticate

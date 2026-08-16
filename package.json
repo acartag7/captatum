@@ -1,6 +1,6 @@
 {
   "name": "captatum",
-  "version": "0.20.1",
+  "version": "0.20.2",
   "type": "module",
   "description": "Captatum \u2014 adaptive MCP web-fetch tool for AI agents: SSRF-safe, injection-safe reads with a provenance receipt on every call; renders JS only when needed, extracts structured data (JSON-LD/OG).",
   "license": "MIT",
