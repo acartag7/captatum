@@ -625,6 +625,20 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   it does not apply when the URL carries a credential anywhere (query key, fragment key, or
   userinfo `user:pass@`), so a loopback OAuth redirect (`…#access_token=…`,
   `http://client:secret@localhost…`) is still flagged.
+- RELATIVE credential references in content, in every RFC 3986 form (2026-08-15
+  executed gap: `/cb#access_token=…` egressed where the absolute spelling was
+  flagged). Two linear scans over the same 500 KB head, neither consuming a path
+  (path-length caps were a bypass — a credential after a 2 050-char generated path
+  must not egress): (1) a KEY-anchored scan — any `?`/`#`/`&` followed by
+  `credential-key=value` flags, wherever the reference starts, with HTML-escaped
+  separators normalized; (2) a NETWORK-PATH scan — `//authority` references carry a
+  host, so the userinfo/internal-host/loopback checks apply via a dummy scheme,
+  and an UNPARSEABLE authority fails CLOSED (an exposed password aimed at a
+  private host behind an invalid port must not egress because the parser gave
+  up). The
+  #44 ad-noise carve-out is preserved: only the credential key set flags, never
+  generic token/key/auth/expires, and a clean public `//host` reference stays
+  unflagged.
 - URL-embedded credentials — a url that is itself a credential, matched on the source url AND
   any url embedded in content, in all three locations: QUERY params (cloud presigned signatures
   `x-amz-signature`/`x-amz-credential`/`x-amz-security-token`, `x-goog-signature`, Azure Blob

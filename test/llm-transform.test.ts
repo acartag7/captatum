@@ -798,6 +798,216 @@ test("sensitive content prefers local Ollama and skips hosted provider", async (
   assert.equal(local.calls.length, 1);
 });
 
+test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absolute-only scanner gap (2026-08-15 assessment V3)", () => {
+  // Executed gap: the absolute spelling was flagged while the relative spelling
+  // egressed to a hosted LLM. Same credential keys, no host.
+  for (const content of [
+    "see /cb#access_token=OPAQUETOKEN123 in the docs",
+    "see /api/data?access_token=OPAQUETOKEN123",
+    "fetch('/download?sig=abcdEFGH1234567890abcd')",
+    "redirect #/cb?access_token=OPAQUE1",
+    // RFC 3986 sibling forms without a leading slash (codex P1 r2)
+    "see cb?access_token=OPAQUE1",
+    "./download?sig=abcdEFGH1234567890",
+    "../download?sig=abcdEFGH1234567890",
+    // content-leading query/fragment-only references: the ^ anchor captures no
+    // delimiter, so the literal must not lose its initial ? or #
+    "?access_token=OPAQUE2",
+    "#access_token=OPAQUE3",
+    // network-path (//authority) references carry a HOST — the full absolute
+    // chain applies (userinfo / internal host / query keys) (codex P1 r3)
+    "//alice:correcthorse@example.com/file",
+    "//169.254.169.254/latest/meta-data",
+    "//10.0.0.5/admin",
+    // trailing PROSE PUNCTUATION stays in the raw authority — Node accepts , ! )
+    // as hostname chars, so the unnormalized form parsed as "10.0.0.5," and
+    // egressed (codex P1)
+    "cfg //10.0.0.5, then more",
+    // backtick boundaries: inline-code Markdown `//host/…` is the MOST COMMON
+    // shape in docs/logs and was unreachable (codex P1)
+    "run `//169.254.169.254/latest/meta-data` now",
+    "leaked `//alice:password@example.com/x` in logs",
+    // SIBLING SWEEP: every legitimate left-adjacent context, as a class —
+    // pipes was the fifth consecutive one-character boundary finding
+    "|//169.254.169.254/latest/meta-data|", // Markdown table cell
+    "|//alice:password@example.com/x|",
+    "endpoint: //10.0.0.5/api", // YAML/config value
+    "creds,//10.0.0.5/x", // comma
+    "{//10.0.0.5/seed}", // brace
+    "**//10.0.0.5/admin**", // bold emphasis
+    "_//10.0.0.5/admin_", // underscore emphasis
+    ">//169.254.169.254/meta", // blockquote
+    "see!//10.0.0.5/x",
+    // Unicode prose punctuation: Node punycodes a typographic tail into a
+    // non-private hostname, and the prose AFTER a dash joins the authority —
+    // so the authority is captured from a hostname-legality whitelist and
+    // Unicode quotes/dashes are boundaries too (codex P1)
+    "is //169.254.169.254—then read it",
+    "cfg //10.0.0.5” he said",
+    "“//10.0.0.5/admin” quoted",
+    "le lien «//internal.corp/x» ici",
+    "see //10.0.0.5–and act",
+    "see (//169.254.169.254) for creds",
+    "cfg //10.0.0.5:80, next",
+    "//cdn.example/f?sig=abcdEFGH1234567890",
+    // FAIL CLOSED on unparseable authorities: an exposed password aimed at a
+    // private host behind an invalid port must not egress (codex P1 r5)
+    "//alice:correcthorse@10.0.0.5:99999/file",
+    "//example.com:99999/x",
+    "//example.com::/x", // empty/double-colon port is malformed — NO colon trim may rescue it
+    "//internal.corp:/x",
+    "//[fd00::1%25eth0]/docs", // RFC 6874 zone: valid literal, must classify (not malformed)
+    // a credential after a >256-char relative path (codex P1 r3)
+    `/${"x".repeat(300)}?access_token=OPAQUE4`,
+    // and after a >2 048-char path — no per-reference cap may exist (codex P1 r5)
+    `/${"x".repeat(2050)}?access_token=OPAQUE5`,
+    // a >512-char VALUE still flags (the KEY is the signal; the value matches a prefix)
+    `?access_token=${"x".repeat(600)}`,
+    // multi-parameter strings: each key gets its own match (values must not
+    // swallow a later credential pair), base64 padding and all
+    "?a=1&b=2&api_key=XYZ",
+    "?sig=abc123==",
+    "?access_token==SECRET", // a value BEGINNING with = (URLSearchParams reads "=SECRET")
+    // URL-ignored ASCII whitespace (tab/LF/CR — NOT space) inside a key: Node's
+    // parser strips it, so a line-wrapped URL exposes the full key (codex P1)
+    `/cb?access_${"\n"}token=SECRET`,
+    `/cb?x-amz-${"\t"}signature=SECRET`,
+    `https://x/cb?access_${"\r"}token=SECRET`, // the ABSOLUTE scanner's sibling
+    `https://cdn/f?x-goog-${"\n"}signature=abc123`,
+    "?api_key=a=b=c", // and = inside values generally
+    // whitespace-prefixed values: URL parsers percent-encode the leading space
+    // and expose a NONEMPTY credential (codex P1)
+    "/cb?access_token= SECRET",
+    "/cb#access_token= SECRET",
+    "?api_key=  KEY1",
+    "page?a=1&amp;access_token=OPAQUE6",
+  ]) {
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true, content);
+    assert.match(r.reason ?? "", /content_embedded_/, `${content} -> ${r.reason}`);
+  }
+  // SIBLING SWEEP of the cap edge — every evidence class enumerated once. A
+  // sliced host is classified ONLY when TERMINATED (closed ] or : port separator
+  // — otherwise its text may extend: //10 completes to the public 100.0.0.1,
+  // //service.internal to service.internal.com). Unterminated v6 brackets stay
+  // conclusive when the hex prefix cannot escape its block ([fd/[fc ULA,
+  // [fe8-feb link-local). Never classify phantom parses.
+  {
+    const mk = (tail) => "a".repeat(500_000 - tail.length) + tail;
+    const beyond = " continues " + "b".repeat(500);
+    const flagged = [
+      " //alice:secret@10.0.0.5", // user:pass@ is conclusive regardless
+      " //alice:secret@10.0.0.5:99999",
+      " //10.0.0.5:99999", // TERMINATED by the port separator
+      " //service.internal:99999", // terminated; .internal suffix
+      " //[fd12::1", " //[fd00:", " //[fe80:", // hex prefix cannot escape ULA/LL
+      " //service\u3002internal:99999", " //service\uFF0Einternal:99999", // WHATWG dot variants
+      " //10\u30020\u30020\u30025:99999", // v4 with ideographic dots
+    ];
+    for (const tail of flagged) {
+      const r = detectSensitiveTransformInput({ content: mk(tail) + beyond, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, `${tail} -> ${JSON.stringify(r)}`);
+    }
+    const deferred = [
+      " //example.com", " //example.com:99999", // public
+      " //[2606:4700::", " //[2606:4700::1111%25e", // global v6 slices
+      " //10", " //10.", " //192.168.", " //169.254.", " //172.", " //100.", // UNTERMINATED — host text may extend
+      " //10.0.0.5", " //service.internal", // unterminated complete-looking hosts
+      " //127.0.0.1:99999", // loopback: the #127 content exemption
+      " //alice@10.0.0.5", // username not a secret, host unterminated
+      " //example\u3002com", // public host with a dot variant
+      " //m\u00fcnchen.de", // public IDN stays clean
+      " //m\u00fcnchen.internal", " //\u65e5\u672c.internal", // IDN flags MID-CONTENT; at the edge the host is unterminated -> defers (the termination rule)
+    ];
+    for (const tail of deferred) {
+      const r = detectSensitiveTransformInput({ content: mk(tail) + beyond, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, false, `${tail} -> ${JSON.stringify(r)}`);
+    }
+  }
+  // A network-path authority SLICED by the 500 KB scan cap is not malformed —
+  // the complete reference may be a clean public host, and rejecting the
+  // artificial prefix would degrade large public pages on byte alignment (P2).
+  // The head ends mid-authority; the reference completes past the cap.
+  // ... but a COMPLETE user:pass@ before the slice point is conclusive — never deferred
+  {
+    const ref = " //alice:correcthorse@[2606:4700::";
+    const content = "a".repeat(500_000 - ref.length) + ref + "1111]/rest " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true, "exposed password survives the slice");
+    assert.equal(r.reason, "content_embedded_userinfo_credential");
+  }
+  // ... and an internal host fully visible before an INVALID PORT (host
+  // evidence is conclusive even when the port breaks the parse) (codex P1)
+  {
+    const mk = (tail) => "a".repeat(500_000 - tail.length) + tail;
+    for (const ref of [" //10.0.0.5:99999", " //service.internal:99999"]) {
+      const content = mk(ref) + "path continues " + "b".repeat(500);
+      const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+      assert.equal(r.sensitive, true, ref);
+      assert.match(r.reason ?? "", /content_embedded_/);
+    }
+    // a PUBLIC host with the same invalid port still defers (no evidence)
+    const content = mk(" //example.com:99999") + "path continues " + "b".repeat(500);
+    assert.equal(detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" }).sensitive, false);
+  }
+  // ... and a username with no password still defers (a username is not a secret)
+  {
+    const ref = " //alice@[2606:4700::";
+    const content = "a".repeat(500_000 - ref.length) + ref + "1111] " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, false);
+  }
+  {
+    const content = "a".repeat(500_000 - 17) + " //[2606:4700::" + "1111]/docs and more text " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, false, "truncated-at-cap authority must defer, not fail closed");
+  }
+  // ... but ONLY when the match's last character IS the head's last character:
+  // a complete malformed authority ending one char before the cap still has its
+  // TERMINATOR inside the head (the regex consumes boundary+authority, never a
+  // trailing delimiter), which proves it complete — it must fail closed (P1).
+  {
+    const ref = " //alice:correcthorse@10.0.0.5:99999 ";
+    const content = "a".repeat(500_000 - ref.length) + ref + " tail " + "b".repeat(1_000);
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true, "complete malformed authority at cap-1 must fail closed");
+    assert.equal(r.reason, "content_embedded_malformed_network_path");
+  }
+  // A malformed authority fully INSIDE the head still fails closed.
+  {
+    const content = "see //[" + "x".repeat(400_000) + " end";
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, true);
+    assert.equal(r.reason, "content_embedded_malformed_network_path");
+  }
+  // The #44 ad-noise carve-out survives: generic keys on relative URLs stay
+  // unflagged (public pages are full of /track?token=… ad links).
+  for (const content of [
+    "/track?token=xyz&expires=99",
+    "/docs/getting-started",
+    "what? access the token section",
+    "/cb?access_token=", // an EMPTY value is not a credential (nonempty-value rule)
+    "/track?token= xyz", // a generic key with a ws-prefixed value stays generic
+    "/cb?access token=SECRET", // SPACE is not URL-ignored — two keys, neither credential-shaped
+    "//example.com/public", // network-path to a clean public host
+    "//example.com:8080/x", // ... with a VALID port (only malformed authorities fail closed)
+    "docs //example.com, chapter 2", // punctuation on a public host stays clean too
+    "//example.com:8080/x", // a VALID port still parses and stays clean
+    "//[2606:4700::1111%25eth0]/docs", // ... and a zone-identified PUBLIC IPv6 literal
+    "see `//example.com/api` docs", // ... backtick-wrapped public host too
+    "|//example.com/api|", // ... table-cell public host
+    "le lien «//example.com/api» ici", // ... guillemet-wrapped public host
+    // ... and only at a reference BOUNDARY: Python floor division (value//10) and
+    // a // inside an absolute URL's path are NOT authorities (Node parses bare
+    // numbers as IPv4 — public pages silently degraded to raw) (codex P1)
+    "halve it: value//10 in the loop",
+    "see https://example.com/a//2 for details",
+  ]) {
+    const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
+    assert.equal(r.sensitive, false, content);
+  }
+});
+
 test("detectSensitiveTransformInput flags an embedded private-IP URL (SSRF metadata)", async () => {
   const r = detectSensitiveTransformInput({ content: "creds at http://169.254.169.254/latest/meta-data/iam" });
   assert.equal(r.sensitive, true);
