@@ -635,7 +635,16 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   host, so the userinfo/internal-host/loopback checks apply via a dummy scheme,
   and an UNPARSEABLE authority fails CLOSED (an exposed password aimed at a
   private host behind an invalid port must not egress because the parser gave
-  up). The
+  up). Network-path references are recognized in their full WHATWG spelling:
+  backslash is a separator equal to `/` (a run of 2+ mixed `\/` — `\\host\path`
+  and `/\user:pass@host/f` resolve to the private authority exactly like `//`),
+  and URL-ignored tab/LF/CR may appear anywhere inside the reference (Node
+  strips them from separators and hostnames alike) — all three scans run on the
+  whitespace-normalized head, and the `/ \ ? #` terminators keep adjacent
+  references from fusing. Interpretation of the captured authority is 100%
+  Node's URL parser (IDN, Unicode dot variants, IPv6 zones, shorthand all
+  normalize as the browser sees them); only the boundary and the capture are
+  ours. The
   #44 ad-noise carve-out is preserved: only the credential key set flags, never
   generic token/key/auth/expires, and a clean public `//host` reference stays
   unflagged.
