@@ -58,11 +58,6 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *  legitimate left-adjacent context; terminators stop the capture so references
  *  never fuse; interpretation is 100% Node's parser (IDN/dots/zones/shorthand).
  *  #44 carve-out: generic keys and clean public //hosts never flag. */
-const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=[\t ]*([^\s"'<>&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~“”‘’«»–—―])[\/\\]{2,}([^\s"'<>`\/?#\\\–\—\―\“\”\‘\’\«\»]{1,2048})/g;
-// WHATWG special relative-or-authority: scheme + 0/1 separators = an AUTHORITY
-// cross-scheme (http:\\pass@10.0.0.5/x vs an https page), a PATH same-scheme.
-const SCHEME_PREFIXED_AUTHORITY = /(?:https?|wss?|ftp|file):[\/\\]?([^\s"'<>`\/?#\\\u2013\u2014\u2015\u201C\u201D\u2018\u2019\u00AB\u00BB]{1,2048})/gi;
 
 const MAX_CONTENT_SCAN = 500_000;
 
@@ -130,26 +125,6 @@ export function detectSensitiveTransformInput(input: {
   if (rel) return { sensitive: true, reason: rel.reason };
 
   return { sensitive: false };
-}
-
-/** Evidence CONCLUSIVE in a SLICED host (a parse of the prefix is a phantom —
- *  never classify phantoms): terminated hosts (closed ] or : port separator)
- *  classify via helpers; unclosed [fd/[fc (ULA) and [fe8-feb (link-local)
- *  brackets are hex-inescapable; everything else defers. Loopback keeps the #127
- *  content exemption. */
-function conclusiveEvidence(raw: string): string | undefined {
-  if (raw.startsWith("[")) {
-    if (raw.includes("]")) {
-      const stripped = raw.replace(/\[([^\]]*?)%[^\]]*\]/, "[$1]");
-      return internalHostReason(`https://${stripped}`, true) ?? undefined;
-    }
-    if (/^\[f[cd]/i.test(raw) || /^\[fe[89ab]/i.test(raw)) return "internal_host";
-    return undefined;
-  }
-  const colon = raw.indexOf(":");
-  if (colon === -1) return undefined; // unterminated — the host text may extend
-  const host = raw.slice(0, colon);
-  return internalHostReason(`https://${host}`, true) ?? undefined;
 }
 
 /** Redact signed/tokenized param values from a URL before display (INFOLEAK-1). HOST-AGNOSTIC
