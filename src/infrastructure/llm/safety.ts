@@ -60,7 +60,7 @@ const SIGNED_URL_IN_CONTENT = /https?:\/\/(?:[^\s"'<>)\]\[@\/]+(?::[^\s"'<>)\]\[
  *  other character terminates it. #44 carve-out holds: generic keys and clean
  *  public //hosts never flag. */
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=[\t ]*([^\s"'<>&#]{1,512})/g;
-const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~“”‘’«»–—―])(?:[\/\\][\t\n\r]*){2,}([^ "'<>`\/?#\\\–\—\―\“\”\‘\’\«\»]{1,2048})/g;
+const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~“”‘’«»–—―])[\/\\]{2,}([^\s"'<>`\/?#\\\–\—\―\“\”\‘\’\«\»]{1,2048})/g;
 
 const MAX_CONTENT_SCAN = 500_000;
 
@@ -141,8 +141,8 @@ export function detectSensitiveTransformInput(input: {
     }
   }
   // (2) network-path references: a host is present, so host checks apply.
-  const headTruncated = content.length > MAX_CONTENT_SCAN;
-  for (const match of head.matchAll(RELATIVE_NETWORK_PATH)) {
+  const headTruncated = content.length > MAX_CONTENT_SCAN; // drives the edge check below
+  for (const match of unwrapped.matchAll(RELATIVE_NETWORK_PATH)) {
     // Hostname-whitelist capture; NO punctuation trim (trimming ':' would
     // rescue a malformed empty/double-colon port).
     // CAPTURE is terminator-based (the URL grammar's own: whitespace, quotes,
@@ -158,7 +158,7 @@ export function detectSensitiveTransformInput(input: {
     const trimmed = stripTrailingProseClosers(captured.replace(/[.,;!?]+$/, ""));
     const atEdge = headTruncated
       && match.index !== undefined
-      && match.index + match[0].length === head.length;
+      && match.index + match[0].length === unwrapped.length;
     if (atEdge) {
       // The reference is SLICED by the 500 KB boundary: its completion is
       // unknown and a URL parse of the prefix is a PHANTOM — never classify a
