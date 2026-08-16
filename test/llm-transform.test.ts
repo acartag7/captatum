@@ -1015,6 +1015,13 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
         "cfg ///10.0.0.5/x",
         `cfg ${B}${B}${B}${B}10.0.0.5/x`,
         `cfg /${B}/10.0.0.5/x`,
+        // URL-ignored whitespace INSIDE the separator run (line-wrapped
+        // backslash forms): Node strips tab/LF/CR mid-run and resolves the
+        // private authority — and two newline-separated references must NOT
+        // fuse (each keeps its own boundary) (codex P1 r3 on #206)
+        `leak ${B}${String.fromCharCode(13)}${B}alice:pass@10.0.0.5/x`,
+        `cfg /${B}${String.fromCharCode(10)}/10.0.0.5/x`,
+        `cfg /${String.fromCharCode(9)}/10.0.0.5/x`,
       ]) {
         const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
         assert.equal(r.sensitive, true, content);
@@ -1027,6 +1034,7 @@ test("detectSensitiveTransformInput flags RELATIVE credential URLs — the absol
     // availability trade-off, not a bypass.
     for (const content of [
       `open C:\u005CUsers\u005Carnold\u005Cfile`,
+      "see //example.com\nalso //example.org docs", // newline-separated refs never fuse
     ]) {
       const r = detectSensitiveTransformInput({ content, sourceUrl: "https://public.example/a" });
       assert.equal(r.sensitive, false, content);
