@@ -154,12 +154,19 @@ async function resolveBoot(options: StartHostedServerOptions) {
   };
 }
 
-function createHostedBulk(
+export function createHostedBulk(
   captatum: ReturnType<typeof createCaptatumUseCase>,
   clock: ClockPort,
 ) {
-  if (!config.bulk.enabled()) return undefined;
+  // Eager fail-closed parse BEFORE the enabled gate: a disabled bulk must not hide
+  // malformed sibling selectors from the boot-time contract (codex round 2).
+  const maxPerHostInflight = config.bulk.maxPerHostInflight();
+  const crawlDelayMs = config.bulk.crawlDelayMs();
+  const maxConcurrency = config.bulk.maxConcurrency();
+  const quotaWindowSeconds = config.bulk.quotaWindowSeconds();
+  const quotaSeedLimit = config.bulk.quotaSeedLimit();
   const maxGlobalWallMs = config.bulk.maxGlobalWallMs();
+  if (!config.bulk.enabled()) return undefined;
   return createCaptatumBulkUseCase({
     executor: captatum,
     adapters: createAdapterRegistry(),

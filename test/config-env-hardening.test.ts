@@ -112,3 +112,18 @@ test("bulk maxConcurrency env ceiling equals the domain lowering-only clamp (no 
   process.env.CAPTATUM_BULK_MAX_CONCURRENCY = "4";
   assert.equal(config.bulk.maxConcurrency(), 4);
 });
+
+test("bulk selectors fail closed at boot even when bulk is DISABLED (codex round 2)", async () => {
+  const config = await freshConfig();
+  process.env.CAPTATUM_BULK_ENABLED = "false";
+  process.env.CAPTATUM_BULK_QUOTA_WINDOW_SECONDS = "garbage";
+  const { createHostedBulk } = await import("../src/server-runtime.ts");
+  const clock = { nowMs: () => 0 };
+  assert.throws(
+    () => createHostedBulk({} as never, clock),
+    /CAPTATUM_BULK_QUOTA_WINDOW_SECONDS/,
+    "malformed sibling knobs must boot-fail even with bulk off",
+  );
+  process.env.CAPTATUM_BULK_QUOTA_WINDOW_SECONDS = "120";
+  assert.equal(createHostedBulk({} as never, clock), undefined, "disabled bulk stays undefined with valid knobs");
+});
