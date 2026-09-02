@@ -27,6 +27,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import { createHostedAuthStore } from "../src/infrastructure/auth-store.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { createHttpApp } from "../src/interfaces/http/app.ts";
+import { InMemoryAuthRateLimit } from "../src/infrastructure/in-memory-auth-rate-limit.ts";
 import { startHostedServer } from "../src/server.ts";
 import { runMachineClientCli } from "../src/machine-client.ts";
 import {
@@ -132,6 +133,7 @@ async function setup(existing?: {
     captatum,
     flavor: "hosted",
     bridge,
+    authRateLimit: new InMemoryAuthRateLimit(clock),
     authorizer,
     identity: unusedIdentity,
     clock,

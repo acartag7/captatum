@@ -1,6 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Bridge, BridgeConfig, IdentityPort, RateLimitPort, RequestAuthorizer } from "mcp-sso";
-import { InMemoryAuthRateLimit } from "../../infrastructure/in-memory-auth-rate-limit.ts";
 import { registerOAuthRoutes } from "mcp-sso/fastify";
 import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { ClockPort } from "../../application/ports/clock.ts";
@@ -37,14 +36,11 @@ export interface HttpAppDeps {
   proxyAuthSecret: string;
   /** Raw captatum_bulk use case; absent when CAPTATUM_BULK_ENABLED is off (hosted). */
   bulk?: CaptatumBulkMcpExecutor;
-  /** The auth rate limiter shared with the Bridge — captatum additionally guards the
-   * two OAuth POSTs the library's route adapter leaves unthrottled (`/oauth/revoke`,
-   * `/oauth/authorize/approve`; executed 2026-09-01: 15 rapid approves, zero 429s,
-   * while register 429s at the 11th). Optional to inject for tests; when absent the
-   * app constructs its own instance — the revoke:/approve: budgets are NEVER silently
-   * unguarded (codex round: an optional bare guard would let a directly-constructed
-   * hosted app skip them). */
-  authRateLimit?: Pick<RateLimitPort, "check">;
+  /** The SAME limiter instance the Bridge was constructed with — REQUIRED, so OAuth
+   * traffic is bounded by ONE shared map (contract: a single map capped at 4,096 keys;
+   * a second instance would double the key budget and split accounting). Captatum also
+   * uses it for the two OAuth POSTs the library adapter leaves unthrottled. */
+  authRateLimit: Pick<RateLimitPort, "check">;
 }
 
 /**
@@ -104,7 +100,6 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
     requestTimeout,
     trustProxy: deps.trustedProxyCidrs,
   });
-  const authRateLimit = deps.authRateLimit ?? new InMemoryAuthRateLimit(deps.clock);
   app.addHook("onRequest", async (request, reply) => {
     if (
       authenticateProxyHeaders(
@@ -124,7 +119,7 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
     const path = request.raw.url?.split("?")[0] ?? "";
     const surface = path === "/oauth/revoke" ? "revoke:" : path === "/oauth/authorize/approve" ? "approve:" : undefined;
     if (surface) {
-      const allowed = await authRateLimit.check(surface + request.ip);
+      const allowed = await deps.authRateLimit.check(surface + request.ip);
       if (!allowed) {
         await reply.code(429).send({ error: { code: "rate_limited", message: "Too many requests — retry later" } });
         return;

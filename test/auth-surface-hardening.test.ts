@@ -122,53 +122,17 @@ test("a normal small OAuth body still parses (no over-blocking)", async () => {
   } finally { await app.close(); }
 });
 
-test("a directly-constructed app without an injected limiter still guards revoke (never silently unguarded)", async () => {
-  const dir = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "v4-nolim-")));
-  const file = join(dir, "auth.sqlite");
-  const stores = await createHostedAuthStore(
-    { backend: "sqlite", stateDirectory: dir, authFilename: file, clientFilename: `${file}.clients` },
-    { redirectAllowlist: ["https://client.test/callback"], scopeCatalog: [...OAUTH_SCOPES] },
-  );
-  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  const config = createBridgeConfig({
-    issuer: ISSUER, resource: RESOURCE,
-    consentSigningSecret: randomBytes(32).toString("hex"),
-    signingPrivateJwk: { ...privateKey.export({ format: "jwk" }), alg: "ES256", kid: "k" },
-    signingKeyId: "k",
-    redirectAllowlist: ["https://client.test/callback"],
-    scopeCatalog: [...OAUTH_SCOPES],
-    defaultScopes: [OAUTH_SCOPES[0]],
-    allowedOrigins: ["https://client.test"],
-    dcr: { mode: "stored", store: stores.clientStore },
-    clientCredentials: { enabled: true },
-    cimd: { enabled: true },
-    accessTokenTtlSeconds: 600, refreshTokenTtlSeconds: 2592000,
-    consentTokenTtlSeconds: 300, authorizationCodeTtlSeconds: 300,
-  });
-  const captatum = createCaptatumUseCase({ fetcher, extractHtml, clock });
-  const app = await createHttpApp({
-    captatum, flavor: "hosted",
-    bridge: new Bridge({ config, store: stores.store, clock, audit }),
-    authorizer: new RequestAuthorizer({ config, clock, audit }),
-    identity: { async verify() { return { ok: false, reason: "unused" }; } },
-    clock, audit,
-    allowedHosts: ["captatum.test", "127.0.0.1"],
-    allowedOrigins: ["https://client.test"],
-    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
-    proxyAuthSecret: randomBytes(32).toString("base64url"),
-    // NOTE: no authRateLimit injected — the guard must still fire.
-  });
-  await app.listen({ host: "127.0.0.1", port: 0 });
+test("the limiter dep is required — one shared map bounds the whole OAuth surface", async () => {
+  // The dependency is now REQUIRED (authRateLimit: Pick<RateLimitPort,"check">), so a
+  // second 4,096-key map cannot be constructed beside the Bridge's (codex round 3).
+  // Observable behavior: the SAME instance still 429s revoke floods.
+  const app = await bootApp();
   try {
     const codes = [];
     for (let i = 0; i < 32; i++) {
-      const r = await fetch(`${app.listeningOrigin}/oauth/revoke`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "x" }) });
+      const r = await fetch(app.url("/oauth/revoke"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "x" }) });
       codes.push(r.status);
     }
-    assert.ok(codes.slice(30).includes(429), `fallback limiter must engage (tail: ${JSON.stringify([...new Set(codes)])})`);
-  } finally {
-    await app.close();
-    await stores.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
+    assert.ok(codes.slice(30).includes(429), `shared limiter must engage (tail: ${JSON.stringify([...new Set(codes)])})`);
+  } finally { await app.close(); }
 });

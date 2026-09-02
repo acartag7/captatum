@@ -127,7 +127,7 @@ async function setup() {
     store,
     clock,
     audit,
-    rateLimit: new InMemoryAuthRateLimit(clock),
+    rateLimit: new InMemoryAuthRateLimit(clock), // shared into createHttpApp below
     cimdResolver: {
       async resolve(hostname) {
         assert.equal(hostname, "metadata.client.test");
@@ -158,6 +158,7 @@ async function setup() {
   const captatum = createCaptatumUseCase({ fetcher: new FakeFetcher(), extractHtml, clock });
   const app = await createHttpApp({
     captatum, flavor: "hosted", bridge, authorizer, identity: stubIdentity, clock, audit,
+    authRateLimit: new InMemoryAuthRateLimit(clock),
     allowedHosts: [HOST], allowedOrigins: [ORIGIN],
     trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
     proxyAuthSecret: TEST_PROXY_AUTH_SECRET,

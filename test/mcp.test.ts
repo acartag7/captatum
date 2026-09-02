@@ -20,6 +20,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { assertHostedFlavor, createHttpApp, HostedFlavorError } from "../src/interfaces/http/app.ts";
+import { InMemoryAuthRateLimit } from "../src/infrastructure/in-memory-auth-rate-limit.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS } from "../src/interfaces/mcp/schema.ts";
 import { TEST_PROXY_AUTH_SECRET } from "./support/proxy-auth.ts";
 
@@ -259,6 +260,7 @@ async function setup(options: { transformer?: TransformPort } = {}) {
     captatum,
     flavor: "hosted",
     bridge,
+    authRateLimit: new InMemoryAuthRateLimit(clock),
     authorizer,
     identity: stubIdentity,
     clock,
