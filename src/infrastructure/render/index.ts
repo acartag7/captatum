@@ -18,11 +18,14 @@ export type { BrowserUrlGuard } from "./browser-url-guard.ts";
 export function createRenderer(
   cdpEndpoint = config.render.cdpEndpoint(),
 ): RenderPort {
-  // Boot-time fail-closed evaluation: the render POST selectors are otherwise read
-  // per-render inside RenderRouteState, so a malformed value would surface as a
-  // mid-request failure instead of the loud boot rejection every selector gets.
+  // Boot-time fail-closed evaluation: these selectors are otherwise read lazily (the
+  // POST pair inside RenderRouteState, the sandbox only on an in-process launch), so a
+  // malformed value would surface as a mid-request failure — or never — instead of the
+  // loud boot rejection every selector gets. Evaluated on EVERY path, including
+  // hosted-with-no-endpoint (the render-unavailable route).
   void config.render.postMaxBytes();
   void config.render.postConcurrency();
+  void config.render.chromiumSandbox();
   // Hosted never launches a browser in-process (threat model): without a CDP
   // workload, Tier-3 is render-unavailable rather than attempting an in-process
   // launch inside the OAuth-key blast radius. The published gateway image ships no

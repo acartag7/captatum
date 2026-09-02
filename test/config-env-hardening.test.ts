@@ -139,3 +139,25 @@ test("hosted auth gate uses the same strict parse (trim-then-literal, injected e
   }
   assert.throws(() => assertHostedCloudflareAccess({ ...base }), /Cloudflare Access/);
 });
+
+test("every boolean selector is strict incl. OAUTH_ALLOW_INSECURE_LOCALHOST; sandbox validated on all renderer paths", async () => {
+  const config = await freshConfig();
+  process.env.OAUTH_ALLOW_INSECURE_LOCALHOST = " true ";
+  const { validateMcpSsoMaterial } = await import("../src/application/mcp-sso-config.ts");
+  process.env.OAUTH_ISSUER = "http://localhost:8787"; // dev switch requires a loopback issuer
+  process.env.OAUTH_RESOURCE = "http://localhost:8787/mcp";
+  process.env.OAUTH_CONSENT_SIGNING_SECRET = "s".repeat(40);
+  process.env.OAUTH_SIGNING_PRIVATE_JWK = JSON.stringify({ kty: "EC", crv: "P-256", x: "x", y: "y", d: "d" });
+  process.env.OAUTH_SIGNING_KEY_ID = "k";
+  process.env.OAUTH_REDIRECT_ALLOWLIST = "https://c.test/cb";
+  process.env.MCP_ALLOWED_ORIGINS = "https://c.test";
+  assert.ok(validateMcpSsoMaterial(), "' true ' trims to a valid dev switch (was: silently false)");
+  process.env.OAUTH_ALLOW_INSECURE_LOCALHOST = "garbage";
+  assert.throws(() => validateMcpSsoMaterial(), /OAUTH_ALLOW_INSECURE_LOCALHOST/);
+  // sandbox selector boot-fails via createRenderer even on the render-unavailable path
+  process.env.CAPTATUM_BROWSER_INPROCESS_SANDBOX = "garbage";
+  delete process.env.CAPTATUM_BROWSER_CDP_ENDPOINT;
+  const { createRenderer } = await import("../src/infrastructure/render/index.ts");
+  assert.throws(() => createRenderer(), /CAPTATUM_BROWSER_INPROCESS_SANDBOX/);
+  void config;
+});
