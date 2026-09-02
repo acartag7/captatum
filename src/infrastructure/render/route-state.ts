@@ -2,7 +2,7 @@ import type { FetcherResult, Redirect, RejectResult } from "../../application/po
 import type { RenderAction, RenderInput } from "../../application/ports/renderer.ts";
 import { config } from "../../config.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
-import { type BrowserUrlGuard } from "./browser-url-guard.ts";
+import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
 import { registrableDomain } from "../../domain/registrable-domain.ts";
 import { abortRoute } from "./route-abort.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
