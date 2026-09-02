@@ -9,10 +9,7 @@ minimumReleaseAge: 21600
 # stranger supply-chain compromise (yanked within hours-days), which doesn't apply to a
 # freshly-published own library. Scoped to mcp-sso ONLY; the global rule is unchanged.
 # Remove once a release clears 15 days organically. Re-check before every install/deploy.
-minimumReleaseAgeExclude:
-  - mcp-sso
-  # ADVISORY-DRIVEN exception (recorded in docs/dependency-ledger.md): hono 4.12.34 is
-  # the minimum version fixing five published GHSAs and is younger than the 15-day gate
-  # (published 2026-08-03). Advisory-driven updates do NOT wait; the exception is
-  # per-package ONLY — the global floor is unchanged.
-  - hono
+# No minimumReleaseAgeExclude entries: mcp-sso 0.3.2 (published 2026-07-28) and the
+# advisory-driven hono 4.12.34 exception (2026-08-03, GHSA-recorded in
+# docs/dependency-ledger.md) have both aged well past the 15-day gate — the global
+# floor applies to every pin again.

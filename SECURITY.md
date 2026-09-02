@@ -22,7 +22,7 @@ days.
 
 ## Supported versions
 
-Only the **latest release** line receives security fixes (currently **v0.11.0**).
+Only the **latest release** line receives security fixes (currently **v0.20.x**).
 Pin to a released tag; `main` is unreleased and may change.
 
 ## Threat model (authoritative)
