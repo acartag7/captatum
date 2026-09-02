@@ -108,7 +108,9 @@ describe("Tier-3 SSRF — every browser request routes through the fetcher (real
 });
 
 async function render(url: string, fetcher: FetcherPort): Promise<RenderOutput> {
-  return new PlaywrightRenderer().render({
+  // chromiumSandbox off: CI Linux runners can't run Chromium's setuid sandbox —
+  // the sibling suites (fixtures, popup-egress) launch the same way; prod keeps it on.
+  return new PlaywrightRenderer({ chromiumSandbox: false }).render({
     url,
     maxBytes: MAX_BYTES,
     timeoutMs: TIMEOUT_MS,
