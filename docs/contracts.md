@@ -395,7 +395,11 @@ one `fail` entry + a `failures[]` row, NOT a tool-level error.
 
 1. `CaptatumContext` gains optional `signal?: AbortSignal` (moved out of
    `captatum.ts` to `src/application/ports/captatum-context.ts`). **Consumed by the
-   bulk runtime** — `execute` threads `context.signal` into the Tier-1 `fetchGuarded`
+   bulk runtime** — and, since 2026-09, composed with an internal render-lifetime
+   controller on EVERY render (in-flight subresource fetches cancel when the render's
+   outcome is settled, so single-fetch egress no longer outlives the returned result;
+   caller-visible `context.signal` semantics unchanged, teardown aborts contribute no
+   provenance actions) — `execute` threads `context.signal` into the Tier-1 `fetchGuarded`
    + the Ashby-embed resolver (the two live fetch paths a bulk seed takes), and the
    guarded fetcher composes it with its own per-tier timeout via `AbortSignal.any`
    so the bulk wall deadline aborts in-flight fetches (surfaced as a per-seed
