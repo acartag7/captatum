@@ -1,5 +1,5 @@
 import { isLoopbackHost } from "./domain/policy.ts";
-import { BULK_GUARD_CEILINGS } from "./domain/bulk-policy.ts";
+import { BULK_GUARD_CEILINGS, BULK_GUARD_DEFAULTS } from "./domain/bulk-policy.ts";
 import {
   parseProxyAuthSecret,
   parseTrustedProxyCidrs,
@@ -41,7 +41,7 @@ export const config = {
     clientProfiles: () => envString("CAPTATUM_CLIENT_PROFILES", ""),
   },
   cloudflareAccess: {
-    enabled: () => envString("CF_ACCESS_ENABLED", "false") === "true",
+    enabled: () => envStrictBoolean("CF_ACCESS_ENABLED", false),
     audience: () => envString("CF_ACCESS_AUDIENCE", ""),
     certsUrl: () => envString("CF_ACCESS_CERTS_URL", ""),
     issuer: () => envString("CF_ACCESS_ISSUER", ""),
@@ -123,10 +123,12 @@ export const config = {
     /** Hosted captatum_bulk gate (BULK-GATE): ON as of PR 3 — the LimitingFetcher
      *  (BULK-2) + BulkQuotaPort (BULK-1) have landed. Local flavor ships ON regardless.
      *  Operators may set this to "false" to disable hosted bulk independently. */
-    enabled: () => envString("CAPTATUM_BULK_ENABLED", "true") === "true",
+    enabled: () => envStrictBoolean("CAPTATUM_BULK_ENABLED", true),
     maxPerHostInflight: () => envStrictInteger("CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT", 2, BULK_GUARD_CEILINGS.maxPerHostInflight),
     crawlDelayMs: () => envStrictInteger("CAPTATUM_BULK_CRAWL_DELAY_MS", 1_000, 600_000),
-    maxConcurrency: () => envStrictInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4, 8),
+    // Ceiling == the domain default: bulk-config.ts clamps maxConcurrency lowering-only,
+    // so an env value above the default would pass here only to be silently clamped back.
+    maxConcurrency: () => envStrictInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4, BULK_GUARD_DEFAULTS.maxConcurrency),
     /** #157: hosted runtime lever to raise the bulk global-deadline wall (maxGlobalWallMs) from
      *  the 55 s hosted default toward the 180 s hard ceiling, without a code change. The wall is a
      *  directed-DoS / egress-deadline bound, so this is a SECURITY SELECTOR — malformed input fails

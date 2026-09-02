@@ -16,6 +16,9 @@ const NAMES = [
   "CAPTATUM_GLOBAL_FETCH_CONCURRENCY",
   "CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT",
   "CAPTATUM_MAX_CONCURRENT_RENDERS",
+  "CAPTATUM_BULK_ENABLED",
+  "CF_ACCESS_ENABLED",
+  "CAPTATUM_BULK_MAX_CONCURRENCY",
 ] as const;
 
 beforeEach(() => { for (const n of NAMES) saved[n] = process.env[n]; });
@@ -88,4 +91,24 @@ test("integer selectors enforce ceilings (no ConfigMap widening past the cap)", 
   assert.throws(() => config.render.maxConcurrentRenders(), /outside the allowed range/);
   process.env.CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT = "32";
   assert.equal(config.bulk.maxPerHostInflight(), 32);
+});
+
+test("remaining operator booleans are strict too (bulk enabled, CF Access gate)", async () => {
+  const config = await freshConfig();
+  process.env.CAPTATUM_BULK_ENABLED = "true\n";
+  assert.equal(config.bulk.enabled(), true);
+  process.env.CAPTATUM_BULK_ENABLED = "1";
+  assert.throws(() => config.bulk.enabled(), /CAPTATUM_BULK_ENABLED/);
+  process.env.CF_ACCESS_ENABLED = "TRUE";
+  assert.throws(() => config.cloudflareAccess.enabled(), /CF_ACCESS_ENABLED/);
+  delete process.env.CF_ACCESS_ENABLED;
+  assert.equal(config.cloudflareAccess.enabled(), false);
+});
+
+test("bulk maxConcurrency env ceiling equals the domain lowering-only clamp (no silent 5-8)", async () => {
+  const config = await freshConfig();
+  process.env.CAPTATUM_BULK_MAX_CONCURRENCY = "5";
+  assert.throws(() => config.bulk.maxConcurrency(), /outside the allowed range/);
+  process.env.CAPTATUM_BULK_MAX_CONCURRENCY = "4";
+  assert.equal(config.bulk.maxConcurrency(), 4);
 });
