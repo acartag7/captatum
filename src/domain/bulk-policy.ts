@@ -64,6 +64,10 @@ export const BULK_GUARD_CEILINGS = {
   maxTransformCostUsd: 0.5,
   perSeedTransformCostUsd: 0.05,
   crawlDelayMsFloor: 500,
+  // Per-host token-bucket BURST ceiling: the one bulk knob that was
+  // intentionally operator-raisable, so it needs an upper bound to stay a
+  // tuning lever rather than a directed-DoS rate dial (32 = 16x the default).
+  maxPerHostInflight: 32,
 } as const;
 
 /** A pre-validated seed: a normalized http(s) URL (the application layer ran

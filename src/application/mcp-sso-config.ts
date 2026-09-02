@@ -7,6 +7,7 @@ import {
   type ClientStore,
 } from "mcp-sso";
 import { config } from "../config.ts";
+import { envStrictBoolean } from "../env-parsing.ts";
 import { OAUTH_SCOPES } from "./scopes.ts";
 
 export type DeploymentFlavor = "hosted" | "local-binary";
@@ -64,7 +65,7 @@ export function validateMcpSsoMaterial(
     allowedOrigins: mustListEnv(env, "MCP_ALLOWED_ORIGINS"),
     dcr: { mode: "stateless" },
     cimd: { enabled: true },
-    dev: envString(env, "OAUTH_ALLOW_INSECURE_LOCALHOST") === "true"
+    dev: envStrictBoolean("OAUTH_ALLOW_INSECURE_LOCALHOST", false, env)
       ? { allowInsecureLocalhost: true }
       : undefined,
     accessTokenTtlSeconds: config.oauth.accessTokenTtlSeconds,
@@ -78,7 +79,11 @@ export function validateMcpSsoMaterial(
 
 /** Hosted authorization requires a verified Cloudflare Access identity. */
 export function assertHostedCloudflareAccess(env: NodeJS.ProcessEnv = process.env): void {
-  const enabled = (env.CF_ACCESS_ENABLED ?? "false") === "true";
+  // Same strict parse as config.cloudflareAccess.enabled(): trim first (ConfigMap
+  // contamination), then exact literals — this gate runs BEFORE any config.ts
+  // accessor, so a raw `=== "true"` here silently rejected values the selector
+  // contract calls valid (" true ") and accepted nothing the parser rejects.
+  const enabled = envStrictBoolean("CF_ACCESS_ENABLED", false, env);
   const audience = env.CF_ACCESS_AUDIENCE?.trim();
   const certsUrl = env.CF_ACCESS_CERTS_URL?.trim();
   const issuer = env.CF_ACCESS_ISSUER?.trim();

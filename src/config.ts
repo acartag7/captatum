@@ -1,9 +1,16 @@
 import { isLoopbackHost } from "./domain/policy.ts";
-import { BULK_GUARD_CEILINGS } from "./domain/bulk-policy.ts";
+import { BULK_GUARD_CEILINGS, BULK_GUARD_DEFAULTS } from "./domain/bulk-policy.ts";
 import {
   parseProxyAuthSecret,
   parseTrustedProxyCidrs,
 } from "./domain/trusted-proxy.ts";
+import {
+  envBulkWallMs,
+  envList,
+  envStrictBoolean,
+  envStrictInteger,
+  envString,
+} from "./env-parsing.ts";
 
 const DNS_1123_LABEL =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -14,7 +21,7 @@ export const config = {
   },
   http: {
     host: () => envString("HOST", "127.0.0.1"),
-    port: () => envPositiveInteger("PORT", 3000),
+    port: () => envStrictInteger("PORT", 3000, 65535),
     bodyLimitBytes: 5 * 1024 * 1024,
   },
   mcp: {
@@ -34,7 +41,7 @@ export const config = {
     clientProfiles: () => envString("CAPTATUM_CLIENT_PROFILES", ""),
   },
   cloudflareAccess: {
-    enabled: () => envString("CF_ACCESS_ENABLED", "false") === "true",
+    enabled: () => envStrictBoolean("CF_ACCESS_ENABLED", false),
     audience: () => envString("CF_ACCESS_AUDIENCE", ""),
     certsUrl: () => envString("CF_ACCESS_CERTS_URL", ""),
     issuer: () => envString("CF_ACCESS_ISSUER", ""),
@@ -85,12 +92,12 @@ export const config = {
       return url;
     },
     ollamaModel: () => envString("OLLAMA_MODEL", "llama3.1"),
-    timeoutMs: () => envPositiveInteger("TRANSFORM_TIMEOUT_MS", 45000),
+    timeoutMs: () => envStrictInteger("TRANSFORM_TIMEOUT_MS", 45_000, 600_000),
     /** #3: default output-token budget when the caller omits `budget` (bounds paid
      *  generation per call). Clamped upstream to the chosen model's max (#125).
      *  Raised 2 000 → 8 000: 2 K was low enough that content-rich pages silently
      *  truncated. */
-    maxOutputTokensDefault: () => envPositiveInteger("TRANSFORM_MAX_OUTPUT_TOKENS", 8000),
+    maxOutputTokensDefault: () => envStrictInteger("TRANSFORM_MAX_OUTPUT_TOKENS", 8_000, 100_000),
     freeFirst: true,
   },
   render: {
@@ -101,25 +108,27 @@ export const config = {
       envString("CAPTATUM_BROWSER_CDP_ENDPOINT", ""),
     ),
     /** Chromium sandbox for in-process launch (default true — threat model: never --no-sandbox). Only relevant when no CDP workload is configured. */
-    chromiumSandbox: () => envString("CAPTATUM_BROWSER_INPROCESS_SANDBOX", "true") === "true",
+    chromiumSandbox: () => envStrictBoolean("CAPTATUM_BROWSER_INPROCESS_SANDBOX", true),
     /** DOS-2: max concurrent Tier-3 renders. Chromium is the expensive resource, so
      * bound it independently of the global admission cap (default 2). */
-    maxConcurrentRenders: () => envPositiveInteger("CAPTATUM_MAX_CONCURRENT_RENDERS", 2),
+    maxConcurrentRenders: () => envStrictInteger("CAPTATUM_MAX_CONCURRENT_RENDERS", 2, 16),
     /** #111: per-render cap on a forwarded POST body (bytes). Never truncates — a body over
      *  the cap is aborted (a half JSON body 400s). 1 MiB accommodates large Notion pages. */
-    postMaxBytes: () => envPositiveInteger("CAPTATUM_RENDER_POST_MAX_BYTES", 1048576),
+    postMaxBytes: () => envStrictInteger("CAPTATUM_RENDER_POST_MAX_BYTES", 1_048_576, 64 * 1_048_576),
     /** #111: per-render concurrency cap on concurrent first-party POSTs (Chromium's per-origin
      *  limit). A POST over the cap is aborted (tryAcquire, never awaited) as render_concurrency_limit. */
-    postConcurrency: () => envPositiveInteger("CAPTATUM_RENDER_POST_CONCURRENCY", 6),
+    postConcurrency: () => envStrictInteger("CAPTATUM_RENDER_POST_CONCURRENCY", 6, 64),
   },
   bulk: {
     /** Hosted captatum_bulk gate (BULK-GATE): ON as of PR 3 — the LimitingFetcher
      *  (BULK-2) + BulkQuotaPort (BULK-1) have landed. Local flavor ships ON regardless.
      *  Operators may set this to "false" to disable hosted bulk independently. */
-    enabled: () => envString("CAPTATUM_BULK_ENABLED", "true") === "true",
-    maxPerHostInflight: () => envPositiveInteger("CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT", 2),
-    crawlDelayMs: () => envPositiveInteger("CAPTATUM_BULK_CRAWL_DELAY_MS", 1000),
-    maxConcurrency: () => envPositiveInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4),
+    enabled: () => envStrictBoolean("CAPTATUM_BULK_ENABLED", true),
+    maxPerHostInflight: () => envStrictInteger("CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT", 2, BULK_GUARD_CEILINGS.maxPerHostInflight),
+    crawlDelayMs: () => envStrictInteger("CAPTATUM_BULK_CRAWL_DELAY_MS", 1_000, 600_000),
+    // Ceiling == the domain default: bulk-config.ts clamps maxConcurrency lowering-only,
+    // so an env value above the default would pass here only to be silently clamped back.
+    maxConcurrency: () => envStrictInteger("CAPTATUM_BULK_MAX_CONCURRENCY", 4, BULK_GUARD_DEFAULTS.maxConcurrency),
     /** #157: hosted runtime lever to raise the bulk global-deadline wall (maxGlobalWallMs) from
      *  the 55 s hosted default toward the 180 s hard ceiling, without a code change. The wall is a
      *  directed-DoS / egress-deadline bound, so this is a SECURITY SELECTOR — malformed input fails
@@ -137,11 +146,11 @@ export const config = {
      *  box) while leaving headroom so single-fetch rarely queues under bulk load. Single-fetch
      *  shares the FIFO pool with bulk seeds — under heavy concurrent bulk load it MAY briefly
      *  queue, bounded by its own timeoutMs (fails gracefully as a retriable `timeout`). */
-    globalFetchConcurrency: () => envPositiveInteger("CAPTATUM_GLOBAL_FETCH_CONCURRENCY", 24),
+    globalFetchConcurrency: () => envStrictInteger("CAPTATUM_GLOBAL_FETCH_CONCURRENCY", 24, 128),
     /** BULK-1: per-tenant rolling seed-window quota window length (seconds). */
-    quotaWindowSeconds: () => envPositiveInteger("CAPTATUM_BULK_QUOTA_WINDOW_SECONDS", 60),
+    quotaWindowSeconds: () => envStrictInteger("CAPTATUM_BULK_QUOTA_WINDOW_SECONDS", 60, 86_400),
     /** BULK-1: per-tenant rolling seed-window quota seed limit (max seeds/window). */
-    quotaSeedLimit: () => envPositiveInteger("CAPTATUM_BULK_QUOTA_SEED_LIMIT", 300),
+    quotaSeedLimit: () => envStrictInteger("CAPTATUM_BULK_QUOTA_SEED_LIMIT", 300, 10_000),
   },
 };
 
@@ -179,25 +188,6 @@ function isKubernetesServiceHost(hostname: string): boolean {
     labels[4] === "local";
 }
 
-function envString(name: string, fallback: string): string {
-  const value = process.env[name];
-  return value && value.trim() ? value : fallback;
-}
-
-function envPositiveInteger(name: string, fallback: number): number {
-  const value = process.env[name];
-  if (!value) {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function envList(name: string): string[] {
-  return envString(name, "").split(",").map((s) => s.trim()).filter(Boolean);
-}
-
 /** #157: parse the bulk global-wall env (a security selector — fail CLOSED at boot on malformed).
  *  Unset / empty / whitespace-only → undefined (absent operator config). Otherwise a strict decimal
  *  integer of ms in [1, ceiling] → that number; anything else throws (names the env var + range).
@@ -205,25 +195,3 @@ function envList(name: string): string[] {
  *  value is accepted — the #1 ConfigMap contamination) and rejects non-decimal shapes an operator
  *  did not literally type (hex 0x10, scientific 1e5, floats, signs, internal whitespace, unicode
  *  digits). Leading zeros (055000) are accepted at no security cost (still decimal-only, bounded). */
-function envBulkWallMs(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const trimmed = raw.trim();
-  if (!/^[0-9]+$/.test(trimmed)) {
-    throw new Error(
-      `${name} must be a decimal integer of milliseconds in [1, ${BULK_GUARD_CEILINGS.maxGlobalWallMs}] ` +
-        `(the bulk global-deadline wall ceiling); got: ${JSON.stringify(raw)}`,
-    );
-  }
-  const parsed = Number(trimmed);
-  if (parsed < 1) {
-    throw new Error(`${name} must be >= 1 ms; got: ${JSON.stringify(raw)}`);
-  }
-  if (parsed > BULK_GUARD_CEILINGS.maxGlobalWallMs) {
-    throw new Error(
-      `${name}=${parsed} ms exceeds the hard ceiling ${BULK_GUARD_CEILINGS.maxGlobalWallMs} ms ` +
-        `(the directed-DoS / egress-deadline bound); lower it toward the 55 s default or up to the ceiling.`,
-    );
-  }
-  return parsed;
-}

@@ -74,7 +74,10 @@ export function resolveBulkGuard(args: {
     perSeedTransformCostUsd = concurrentSafePerSeed;
     clamped.push("perSeedTransformCostUsd");
   }
-  const maxPerHostInflight = Math.max(1, op.maxPerHostInflight ?? BULK_GUARD_DEFAULTS.maxPerHostInflight);
+  const maxPerHostInflight = Math.min(
+    BULK_GUARD_CEILINGS.maxPerHostInflight,
+    Math.max(1, op.maxPerHostInflight ?? BULK_GUARD_DEFAULTS.maxPerHostInflight),
+  );
   const crawlDelayMs = Math.max(
     BULK_GUARD_CEILINGS.crawlDelayMsFloor, op.crawlDelayMs ?? BULK_GUARD_DEFAULTS.crawlDelayMs,
   );
