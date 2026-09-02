@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import type { Bridge, BridgeConfig, IdentityPort, RequestAuthorizer } from "mcp-sso";
+import type { Bridge, BridgeConfig, IdentityPort, RateLimitPort, RequestAuthorizer } from "mcp-sso";
 import { registerOAuthRoutes } from "mcp-sso/fastify";
 import type { AuditLoggerPort } from "../../application/ports/audit.ts";
 import type { ClockPort } from "../../application/ports/clock.ts";
@@ -36,6 +36,11 @@ export interface HttpAppDeps {
   proxyAuthSecret: string;
   /** Raw captatum_bulk use case; absent when CAPTATUM_BULK_ENABLED is off (hosted). */
   bulk?: CaptatumBulkMcpExecutor;
+  /** The SAME limiter instance the Bridge was constructed with — REQUIRED, so OAuth
+   * traffic is bounded by ONE shared map (contract: a single map capped at 4,096 keys;
+   * a second instance would double the key budget and split accounting). Captatum also
+   * uses it for the two OAuth POSTs the library adapter leaves unthrottled. */
+  authRateLimit: Pick<RateLimitPort, "check">;
 }
 
 /**
@@ -74,6 +79,11 @@ export function assertHostedFlavor(flavor: DeploymentFlavor): void {
  *  level deadline wrapping the MCP transport itself is a documented future defense-in-depth. */
 const REQUEST_TIMEOUT_MS = 90_000;
 
+/** OAuth protocol bodies are tiny (a few KiB of form/JSON); the 5 MiB global limit
+ * exists for /mcp tool payloads only. Pre-auth parsing cost on /oauth/* is bounded
+ * by this cap (V4, 2026-09-01). */
+const OAUTH_BODY_CAP_BYTES = 64 * 1024;
+
 export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance> {
   assertHostedFlavor(deps.flavor);
   const oauthConfig: BridgeConfig = deps.bridge.config;
@@ -83,6 +93,16 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
   }
   if (deps.proxyAuthSecret.length !== 43) {
     throw new Error("Hosted HTTP requires a valid proxy authenticator");
+  }
+  // ONE shared limiter map, enforced: the dep must be the SAME instance the Bridge was
+  // constructed with (the field is TS-private but a real property in mcp-sso's emitted
+  // JS; captatum pins its own library). A mismatch — including a Bridge built with NO
+  // limiter, which fail-opens the library-managed OAuth routes — is a boot failure.
+  const bridgeLimiter = (deps.bridge as unknown as { rateLimit?: unknown }).rateLimit;
+  if (bridgeLimiter !== deps.authRateLimit) {
+    throw new Error(
+      "createHttpApp: authRateLimit must be the SAME InMemoryAuthRateLimit instance the Bridge was constructed with (contract: one shared map capped at 4,096 keys). Construct the limiter once and pass it to both.",
+    );
   }
   const app = Fastify({
     logger: false,
@@ -100,6 +120,35 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
       ) === "reject"
     ) {
       await reply.code(400).send({ error: "invalid_proxy_auth" });
+      return;
+    }
+    // V4 (executed 2026-09-01, live on prod): Fastify parsed up to 5 MiB on the OAuth
+    // POSTs BEFORE authorize()/guard() ran, and revoke/approve had no limiter. Both
+    // checks run here — pre-parse, pre-auth, on the effective client address.
+    if (request.method !== "POST") return;
+    const path = request.raw.url?.split("?")[0] ?? "";
+    const surface = path === "/oauth/revoke" ? "revoke:" : path === "/oauth/authorize/approve" ? "approve:" : undefined;
+    if (surface) {
+      const allowed = await deps.authRateLimit.check(surface + request.ip);
+      if (!allowed) {
+        await reply.code(429).send({ error: { code: "rate_limited", message: "Too many requests — retry later" } });
+        return;
+      }
+    }
+    if (path.startsWith("/oauth/")) {
+      const declared = Number(request.headers["content-length"] ?? "");
+      if (Number.isFinite(declared) && declared > OAUTH_BODY_CAP_BYTES) {
+        await reply.code(413).send({
+          error: { code: "payload_too_large", message: `OAuth endpoint bodies are capped at ${OAUTH_BODY_CAP_BYTES} bytes` },
+        });
+      }
+    }
+  });
+  // Chunked (Content-Length-less) OAuth bodies get the same cap per-route: Fastify's
+  // own bodyLimit 413s them mid-stream instead of buffering up to the global 5 MiB.
+  app.addHook("onRoute", (routeOptions) => {
+    if (typeof routeOptions.url === "string" && routeOptions.url.startsWith("/oauth")) {
+      routeOptions.bodyLimit = OAUTH_BODY_CAP_BYTES;
     }
   });
   app.setErrorHandler((error, _request, reply) => sendHttpError(reply, error, oauthConfig));

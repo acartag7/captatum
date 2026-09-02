@@ -27,6 +27,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import { createHostedAuthStore } from "../src/infrastructure/auth-store.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { createHttpApp } from "../src/interfaces/http/app.ts";
+import { InMemoryAuthRateLimit } from "../src/infrastructure/in-memory-auth-rate-limit.ts";
 import { startHostedServer } from "../src/server.ts";
 import { runMachineClientCli } from "../src/machine-client.ts";
 import {
@@ -120,7 +121,8 @@ async function setup(existing?: {
     consentTokenTtlSeconds: 300,
     authorizationCodeTtlSeconds: 300,
   });
-  const bridge = new Bridge({ config, store: stores.store, clock, audit });
+  const sharedLimiter = new InMemoryAuthRateLimit(clock);
+  const bridge = new Bridge({ config, store: stores.store, clock, audit, rateLimit: sharedLimiter });
   const authorizer = new RequestAuthorizer({ config, clock, audit });
   const captatum = createCaptatumUseCase({
     fetcher: new FakeFetcher(),
@@ -132,6 +134,7 @@ async function setup(existing?: {
     captatum,
     flavor: "hosted",
     bridge,
+    authRateLimit: sharedLimiter,
     authorizer,
     identity: unusedIdentity,
     clock,

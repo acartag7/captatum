@@ -67,12 +67,13 @@ export async function startHostedServer(
   let app: Awaited<ReturnType<typeof createHttpApp>> | undefined;
   try {
     const oauthConfig = createMcpSsoConfig(boot.material, stores.clientStore);
+    const authRateLimit = new InMemoryAuthRateLimit(boot.clock);
     const bridge = new Bridge({
       config: oauthConfig,
       store: stores.store,
       clock: boot.clock,
       audit: boot.audit,
-      rateLimit: new InMemoryAuthRateLimit(boot.clock),
+      rateLimit: authRateLimit,
     });
     app = await createHttpApp({
       captatum: boot.captatum,
@@ -87,6 +88,7 @@ export async function startHostedServer(
       identity: boot.identity,
       clock: boot.clock,
       audit: boot.audit,
+      authRateLimit,
       ...boot.security,
     });
     await app.listen({ host: boot.host, port: boot.port });

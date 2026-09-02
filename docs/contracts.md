@@ -833,8 +833,14 @@ until their original expiry, at most 600 seconds after issuance.
 
 The hosted auth routes use a fail-closed per-source fixed-window limiter with
 separate surface keys: at most 10 `register:` attempts per 10 minutes, 120
-`authorize:` attempts per minute, 10 `cimd:` resolutions per 10 minutes, and
-120 `token:` attempts per minute. The shared in-memory map is bounded to 4096
+`authorize:` attempts per minute, 10 `cimd:` resolutions per 10 minutes, 120
+`token:` attempts per minute, and 30 per minute on each of `revoke:` and
+`approve:` (captatum-enforced at the Fastify layer for the two OAuth POSTs the
+library adapter leaves unthrottled). OAuth-route request bodies are capped at
+64 KiB pre-auth (declared Content-Length rejected with 413 before parsing;
+chunked bodies bounded by the same per-route limit), and Fastify request-body
+errors surface as their real 4xx (`invalid_json` 400, `payload_too_large` 413,
+`unsupported_media_type` 415) instead of a collapsed 500. The shared in-memory map is bounded to 4096
 keys; an unavailable, malformed, or unknown surface key is rejected. Hosted
 boot requires a non-empty
 `CAPTATUM_TRUSTED_PROXY_CIDRS` IP/CIDR allowlist and a 43-character base64url

@@ -20,6 +20,7 @@ import { createCaptatumUseCase } from "../src/application/use-cases/captatum.ts"
 import { config } from "../src/config.ts";
 import { extractHtml } from "../src/infrastructure/extract/index.ts";
 import { assertHostedFlavor, createHttpApp, HostedFlavorError } from "../src/interfaces/http/app.ts";
+import { InMemoryAuthRateLimit } from "../src/infrastructure/in-memory-auth-rate-limit.ts";
 import { CAPTATUM_SERVER_INSTRUCTIONS } from "../src/interfaces/mcp/schema.ts";
 import { TEST_PROXY_AUTH_SECRET } from "./support/proxy-auth.ts";
 
@@ -252,13 +253,15 @@ async function setup(options: { transformer?: TransformPort } = {}) {
   const oauthConfig = hostedConfig();
   const fetcher = new FakeFetcher("<main>Fixture raw body</main>");
   const audit = new MemoryAudit();
-  const bridge = new Bridge({ config: oauthConfig, store: createMemoryStore(), clock, audit });
+  const sharedLimiter = new InMemoryAuthRateLimit(clock);
+  const bridge = new Bridge({ config: oauthConfig, store: createMemoryStore(), clock, audit, rateLimit: sharedLimiter });
   const authorizer = new RequestAuthorizer({ config: oauthConfig, clock, audit });
   const captatum = createCaptatumUseCase({ fetcher, extractHtml, transformer: options.transformer, clock });
   const app = await createHttpApp({
     captatum,
     flavor: "hosted",
     bridge,
+    authRateLimit: sharedLimiter,
     authorizer,
     identity: stubIdentity,
     clock,
