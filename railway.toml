@@ -12,10 +12,12 @@
 # network namespace — a no-sandbox browser in the gateway namespace can bind a
 # temporarily free gateway port and receive the edge authenticator after a restart
 # (threat model: browser never shares the gateway/cloudflared namespace). On
-# Railway the safe option is leave allowRender off (the default — Tier-3 reports
-# render-unavailable). For Tier-3 use a deployment shape with the isolated browser
-# Pod topology (Kubernetes init-container netns firewall + CDP relay), e.g. the
-# Mac mini / k3s setup in deploy/mac-mini.md. See deploy/railway.md for details.
+# Railway the safe option is to leave CAPTATUM_BROWSER_CDP_ENDPOINT unset (no
+# CDP workload is configured, so Tier-3 reports render-unavailable on JS shells;
+# note allowRender defaults TRUE for single-fetch — the endpoint, not the flag,
+# is the switch). For Tier-3 use a deployment shape with the isolated browser
+# Pod topology (init-container netns firewall + CDP relay), e.g. the Mac mini
+# k3s setup in deploy/mac-mini.md. See deploy/railway.md for details.
 
 [deploy]
 startCommand = "node --no-warnings src/server.ts"

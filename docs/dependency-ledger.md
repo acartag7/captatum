@@ -177,8 +177,7 @@ ip-address, body-parser, and @hono/node-server arrive via the mcp-sso
 dependency chain (unused transports in captatum's wiring) but are upgraded
 anyway so `pnpm audit --prod` stays clean per this ledger's gate. The
 non-reachability analysis above remains the recorded reasoning for the window
-the vulnerable versions shipped. Remove the hono exclude once it clears 15 days
-organically.
+the vulnerable versions shipped. (Historical: the hono exclude was removed on 2026-09-02 once the pin cleared the 15-day gate.)
 
 ## Browser workload image (Dockerfile.browser)
 
