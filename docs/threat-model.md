@@ -98,6 +98,14 @@ the contract reference; this file is the security reasoning.
   `sub == client_id` plus `gty: client_credentials` and no refresh token.
   Malformed/unknown/policy-invalid rows map to `null`, so mcp-sso returns
   `invalid_client` rather than 500.
+- **Pre-auth OAuth surface (V4, closed 2026-09):** every OAuth POST is checked
+  BEFORE Fastify parses its body — a per-source 30/min `revoke:`/`approve:` budget
+  (the two POSTs the mcp-sso route adapter leaves unguarded; executed pre-fix: 15
+  rapid approves with zero 429s while register 429s at the 11th) and a 64 KiB body
+  cap (declared Content-Length rejected 413 pre-parse; chunked bodies bounded by
+  the per-route bodyLimit). Fastify request-body errors map to their real 4xx
+  (`invalid_json`/`payload_too_large`/`unsupported_media_type`) instead of a
+  collapsed unauthenticated 500 (observed live on prod through Cloudflare).
 - Open stored DCR is bounded twice: a fail-closed per-source limiter permits at
   most 10 attempts per 10 minutes with at most 4096 live limiter keys, and the
   SQLite transaction rejects a new row above 1008 interactive, 16 active

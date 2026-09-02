@@ -11,11 +11,16 @@ interface Bucket {
   resetAt: number;
 }
 
-const POLICIES: Record<"register" | "authorize" | "cimd" | "token", WindowPolicy> = {
+const POLICIES: Record<"register" | "authorize" | "cimd" | "token" | "revoke" | "approve", WindowPolicy> = {
   register: { limit: 10, windowMs: 10 * 60 * 1000 },
   authorize: { limit: 120, windowMs: 60 * 1000 },
   cimd: { limit: 10, windowMs: 10 * 60 * 1000 },
   token: { limit: 120, windowMs: 60 * 1000 },
+  // revoke/approve previously had NO limiter while register/token/authorize/cimd all
+  // did (executed 2026-09-01: 15 rapid approve POSTs, zero 429s) — the unmirrored
+  // sibling fix. Both do per-request hash/CAS work against the OAuth store.
+  revoke: { limit: 30, windowMs: 60 * 1000 },
+  approve: { limit: 30, windowMs: 60 * 1000 },
 };
 const MAX_KEYS = 4096;
 const MAX_KEY_LENGTH = 512;
