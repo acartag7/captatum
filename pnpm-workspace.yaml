@@ -4,12 +4,8 @@ packages:
 # 15 days, in minutes. Requires pnpm >= 10.16.0.
 minimumReleaseAge: 21600
 
-# Own-package exception: mcp-sso (acartag7/mcp-sso) is the owner's own OSS library —
-# captatum's own OAuth, extracted + hardened there. The 15-day rule guards against
-# stranger supply-chain compromise (yanked within hours-days), which doesn't apply to a
-# freshly-published own library. Scoped to mcp-sso ONLY; the global rule is unchanged.
-# Remove once a release clears 15 days organically. Re-check before every install/deploy.
-# No minimumReleaseAgeExclude entries: mcp-sso 0.3.2 (published 2026-07-28) and the
-# advisory-driven hono 4.12.34 exception (2026-08-03, GHSA-recorded in
-# docs/dependency-ledger.md) have both aged well past the 15-day gate — the global
-# floor applies to every pin again.
+# No minimumReleaseAgeExclude entries (removed 2026-09-02): the former mcp-sso
+# own-package exception and the advisory-driven hono 4.12.34 exception both aged past
+# the 15-day gate and were retired. Own packages follow the SAME floor — an owner-side
+# push is as able to carry a bad publish as a stranger's, so no own-package bypass is
+# recorded here. Advisory history: docs/dependency-ledger.md.
