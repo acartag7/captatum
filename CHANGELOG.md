@@ -13,9 +13,12 @@ and four classes of content-exfiltration and event-loop-stall bugs are closed.
   JS-shell pages render again instead of silently degrading to `render_error`.
 - **fix(render): the Tier-3 browser can no longer egress on its own.** Popups
   (including popups-of-popups) escaped request interception entirely; every new
-  page in the render context is now intercepted and closed on sight, and
-  WebRTC's direct UDP and TCP paths are disabled — the "the browser never makes
-  its own egress" guarantee holds again on every deployment flavor.
+  page in the render context is now intercepted and closed on sight. *(Correction,
+  2026-09-02: the WebRTC flag added here stops STUN UDP only in the headless-shell
+  launcher — the local binary flavor. On the hosted full-Chromium sidecar it is
+  inert, and hosted containment rests on the browser Pod's egress firewall — a
+  deployment prerequisite this repo does not ship. Without that boundary, leave
+  `CAPTATUM_BROWSER_CDP_ENDPOINT` unset; see SECURITY.md.)*
 - **fix(safety): credential-bearing references in page content can no longer
   slip past the hosted-LLM egress gate.** Relative URLs (`/cb#access_token=…`),
   any path length, WHATWG backslash spellings (`\\host`, `/\user:pass@host`),
