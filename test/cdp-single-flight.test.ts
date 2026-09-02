@@ -130,3 +130,39 @@ test("a short-budget waiter fails on its OWN deadline, not the initiator's", asy
   assert.ok(counter.calls >= 1, "the shared attempt ran");
   void slowOut;
 });
+
+test("a stalled shared connect detaches when its waiters expire — recovery needs no restart (codex round)", async () => {
+  // First connectOverCDP NEVER settles (stalled resolver); a render times out on its own
+  // budget; the slot must detach so a SECOND render starts a fresh attempt and succeeds.
+  let calls = 0;
+  const context = {
+    newPage: async () => ({
+      mainFrame: () => ({}), frames: () => [], goto: async () => ({ status: () => 200 }),
+      waitForLoadState: async () => {}, waitForTimeout: async () => {},
+      content: async () => "<html><body><main>x</main></body></html>",
+      evaluate: async () => "s", url: () => "https://a.test/1", close: async () => {},
+      on: () => {}, setDefaultTimeout: () => {}, setDefaultNavigationTimeout: () => {},
+    }),
+    route: async () => {}, on: () => {}, routeWebSocket: async () => {}, close: async () => {},
+  };
+  const mod = {
+    chromium: {
+      connectOverCDP: async () => {
+        calls += 1;
+        if (calls === 1) return await new Promise<never>(() => {}); // stalled forever
+        return { newContext: async () => context, close: async () => {} } as never;
+      },
+    },
+  } as unknown as PlaywrightModule;
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: async () => mod,
+    cdpEndpoint: "http://chromium.captatum.svc.cluster.local:9222",
+    cdpResolver: async () => "127.0.0.1",
+  });
+  const first = await renderer.render(input({ url: "https://a.test/stall", timeoutMs: 60 }) as never);
+  assert.equal(first.rendered, false, "stalled connect must fail on the render's own budget");
+  await new Promise((r) => setTimeout(r, 30));
+  const second = await renderer.render(input({ url: "https://a.test/ok", timeoutMs: 5000 }) as never);
+  assert.equal(second.rendered, true, "a fresh attempt must run after the stalled slot detaches");
+  assert.equal(calls, 2, "exactly one fresh connect after detach");
+});

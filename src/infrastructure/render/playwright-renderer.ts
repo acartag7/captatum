@@ -66,10 +66,8 @@ export class PlaywrightRenderer implements RenderPort {
   private readonly settleStableMs: number;
   /** Lazily-connected, reused CDP browser. Connecting per-render would leak a WebSocket every call. */
   private cdpBrowser?: PlaywrightBrowser;
-  /** Single-flight connect (2026-09-01: concurrent first renders leaked relay connections). */
-  private cdpConnecting?: Promise<PlaywrightBrowser>;
-  /** Live waiters — late success with zero waiters closes (codex P2 r2), else caches. */
-  private cdpWaiters = 0;
+  private cdpConnecting?: Promise<PlaywrightBrowser>; // single-flight shared attempt
+  private cdpWaiters = 0; // live waiters: >0 caches a late success, 0 closes/detaches it
 
   constructor(deps: PlaywrightRendererDeps = {}) {
     this.loadPlaywright = deps.loadPlaywright ?? defaultLoadPlaywright;
@@ -178,12 +176,10 @@ export class PlaywrightRenderer implements RenderPort {
     }
   }
 
-  /** Connect over the RESOLVED address (Chromium's DevTools server 500s non-IP Host headers —
-   * see cdp-connect.ts). Single-flight: the SHARED raw connect promise is started once and
-   * cached on success (a late success IS the cache, not a leak); on failure the slot is
-   * cleared so a later render retries. Each waiter races the shared attempt against ITS OWN
-   * deadline + abort signal (codex round: a short-budget render must never hang on the
-   * initiating caller's longer connect window). */
+  /** Connect over the RESOLVED address (DevTools 500s non-IP Hosts — cdp-connect.ts).
+   * Single-flight: one shared raw attempt, cached on success while owned+awaited, closed on
+   * late arrival, cleared on failure OR when its last waiter expires (a stalled connect
+   * detaches so recovery needs no restart). Each waiter races it against its OWN deadline. */
   private connectCdpSingleFlight(
     playwright: PlaywrightModule,
     input: RenderInput,
@@ -198,22 +194,26 @@ export class PlaywrightRenderer implements RenderPort {
         await resolveCdpConnectUrl(endpoint, this.cdpResolver),
       ))();
       this.cdpConnecting = connect;
-      void connect.then(
-        (browser) => {
-          if (this.cdpWaiters > 0) { this.cdpBrowser = browser; return; }
-          // No waiter remains: close a late-arriving browser (codex P2 r2 semantics).
-          this.cdpConnecting = undefined;
-          void browser.close().catch(() => {});
-        },
-        () => { if (this.cdpConnecting === connect) this.cdpConnecting = undefined; },
-      );
+      void connect.then((browser) => {
+        // Cache only while THIS attempt owns the slot AND someone waits; else close the
+        // late arrival (codex P2 r2 — nothing lingers on the relay cap).
+        if (this.cdpConnecting === connect && this.cdpWaiters > 0) { this.cdpBrowser = browser; return; }
+        if (this.cdpConnecting === connect) this.cdpConnecting = undefined;
+        void browser.close().catch(() => {});
+      }, () => { if (this.cdpConnecting === connect) this.cdpConnecting = undefined; });
     }
     this.cdpWaiters++;
+    const slot = this.cdpConnecting; // the attempt THIS waiter joined (own or inherited)
     const attempt = withTimeout(
-      input.signal ? Promise.race([this.cdpConnecting, abortRejection(input.signal)]) : this.cdpConnecting,
+      input.signal ? Promise.race([slot, abortRejection(input.signal)]) : slot,
       remainingMs,
     );
-    void attempt.finally(() => { this.cdpWaiters--; }).catch(() => {});
+    void attempt.finally(() => {
+      this.cdpWaiters--;
+      // Last waiter expired while this attempt still pends: DETACH it — a stalled connect
+      // must not wedge every later render (its late arrival closes above; no restart).
+      if (this.cdpWaiters === 0 && slot && this.cdpConnecting === slot) this.cdpConnecting = undefined;
+    }).catch(() => {});
     return attempt;
   }
 }
