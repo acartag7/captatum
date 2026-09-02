@@ -37,12 +37,14 @@ controls" is the contract reference. Key invariants:
   blocking).
 - **Tier-3 browser:** runs in a separate sidecar container (hosted); every browser
   HTTP/subresource request is fulfilled through `guardedFetch` (`route.fulfill`,
-  never `route.continue`). Transport-layer egress below request interception
-  (WebRTC STUN/TURN UDP, QUIC) is not reachable by interception: on local it is
-  killed by the `disable_non_proxied_udp` Chromium flag (the headless-shell
-  launcher), and on hosted it is stopped only by the browser Pod's egress
-  firewall — a deployment prerequisite this repo does not ship (without an
-  equivalent boundary, hosted Tier-3 is unsupported).
+  never `route.continue`). Transport-layer egress below request interception is
+  not reachable by it: on local, WebRTC STUN/TURN UDP is blocked by the
+  `disable_non_proxied_udp` Chromium flag and browser TCP (TURN/TCP included) by
+  a refusing loopback proxy (both verified in the headless-shell launcher; other
+  UDP-based transports such as QUIC are unverified locally); on hosted, ALL
+  transport egress below interception is stopped only by the browser Pod's
+  egress firewall — a deployment prerequisite this repo does not ship (without
+  an equivalent boundary, hosted Tier-3 is unsupported).
 - **Auth:** the hosted flavor authenticates every `/mcp` request via gateway OAuth
   (PKCE S256, hash-only token storage, replay-revoking refresh rotation,
   per-request scope enforcement).

@@ -16,8 +16,11 @@
 # CDP workload is configured, so Tier-3 reports render-unavailable on JS shells;
 # note allowRender defaults TRUE for single-fetch — the endpoint, not the flag,
 # is the switch). For Tier-3 use a deployment shape with the isolated browser
-# Pod topology (init-container netns firewall + CDP relay), e.g. the Mac mini
-# k3s setup in deploy/mac-mini.md. See deploy/railway.md for details.
+# Pod topology (init-container netns firewall + CDP relay). NOTE: no public
+# Tier-3 deployment guide exists in this repository — deploy/mac-mini.md covers
+# the gateway-only path and the reference browser-Pod topology lives elsewhere;
+# the boundary REQUIREMENTS are specified in docs/threat-model.md. See
+# deploy/railway.md for details.
 
 [deploy]
 startCommand = "node --no-warnings src/server.ts"
