@@ -8,13 +8,14 @@
 #   Env: CAPTATUM_SQLITE_PATH=/data/captatum.sqlite
 #   Derived client file: /data/captatum.sqlite.clients
 #
-# Tier-3 (JS rendering): the browser sidecar must share the gateway's network
-# namespace (loopback CDP — the renderer HARD-REJECTS non-loopback CDP hosts).
-# Railway services do NOT share a namespace, so a separate browser service CANNOT
-# be reached on 127.0.0.1. Options: (a) leave allowRender off (default — no
-# browser); (b) a combined single image bundling gateway + Chromium; or (c) deploy
-# on EC2 / Mac Mini where the network_mode: service:gateway sidecar pattern works.
-# See deploy/railway.md for the full Tier-3 tradeoff.
+# Tier-3 (JS rendering): DO NOT bundle Chromium with the gateway or share its
+# network namespace — a no-sandbox browser in the gateway namespace can bind a
+# temporarily free gateway port and receive the edge authenticator after a restart
+# (threat model: browser never shares the gateway/cloudflared namespace). On
+# Railway the safe option is leave allowRender off (the default — Tier-3 reports
+# render-unavailable). For Tier-3 use a deployment shape with the isolated browser
+# Pod topology (Kubernetes init-container netns firewall + CDP relay), e.g. the
+# Mac mini / k3s setup in deploy/mac-mini.md. See deploy/railway.md for details.
 
 [deploy]
 startCommand = "node --no-warnings src/server.ts"

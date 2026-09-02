@@ -187,7 +187,7 @@ Captatum is a URL-fetcher that may run a headless browser — a textbook SSRF + 
   - The generic Compose shape deliberately ships NO browser sidecar: a no-sandbox browser must have a distinct network namespace with an enforced egress firewall (sharing the gateway namespace would let it impersonate the gateway after a restart). The Compose deployment therefore reports Tier-3 as `render-unavailable` (no CDP endpoint is configured) — JS-shell pages need the Kubernetes browser Pod topology (init-container netns firewall + CDP relay + ingress-only NetworkPolicy) or an equivalent boundary you enforce yourself ([`docs/threat-model.md`](./docs/threat-model.md)). Do NOT add the sidecar to the Compose file without replicating that boundary.
   - Prompt-injection fencing applies to `summary`/`extract`, **not** `output: raw`.
   - Per-host throttle / URL dedupe / render-concurrency caps are implemented; some broader abuse controls remain open.
-  - One disclosed residual: a char-class/metachar ReDoS in extract-schema validation (authenticated callers only, low risk) — close with RE2 or a worker timeout.
+  - Retired in 0.20.2: extract-schema pattern execution is wall-clock-bounded on a worker thread and fails closed; pattern content is rejected at the input boundary before any fetch/LLM spend.
 
 Full reasoning + the SSRF fixture suite: [`docs/threat-model.md`](./docs/threat-model.md). Report vulnerabilities via [SECURITY.md](./SECURITY.md).
 
