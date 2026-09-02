@@ -84,8 +84,7 @@ export class PlaywrightRenderer implements RenderPort {
 
   async render(input: RenderInput): Promise<RenderOutput> {
     const actions: RenderAction[] = [serviceWorkerAction()];
-    // Render-lifetime abort: single-fetch renders compose no caller signal, so an
-    // in-flight subresource fetch kept egressing past the returned result (2026-09-01).
+    // Render-lifetime abort: single-fetch subresource fetches cancel at outcome-settle.
     const renderLifetime = new AbortController();
     const scopedInput: RenderInput = { ...input, signal: input.signal ? AbortSignal.any([input.signal, renderLifetime.signal]) : renderLifetime.signal };
     const state = new RenderRouteState(scopedInput, actions, this.guard);
@@ -169,6 +168,7 @@ export class PlaywrightRenderer implements RenderPort {
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
+      state.teardown = true; // teardown first: abort rejections stay out of provenance
       renderLifetime.abort();
       if (onSignalAbort && input.signal) input.signal.removeEventListener("abort", onSignalAbort);
       await closeQuietly(page);

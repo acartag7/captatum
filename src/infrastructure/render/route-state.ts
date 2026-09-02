@@ -18,12 +18,9 @@ import { hostnameOf, isNavigation, shouldAbortWithoutBody } from "./route-helper
 const ESSENTIAL_RENDER_TYPES = new Set(["script", "fetch", "xhr", "document"]);
 
 /** The essential pool (script/fetch/xhr/document) gets a FIXED byte budget, DECOUPLED from the
- *  per-response `maxBytes` (#143). Coupling it (3×=15MB) aborted heavy-SPA bundles mid-load
- *  (Notion ~19MB: UISpacePermissionGroupToken 3.7MB + 1.1MB getAppConfig + RecordMap/mainApp/…)
- *  → hydration failed → render_empty — recurring every time a heavier SPA crossed the coupled cap
- *  (cerebralvalley → Cursor/Jira → Notion). 48MB ≈ 2.5× today's heaviest measured SPA (stops the
- *  whack-a-mole) yet a firm cumulative DoS backstop (per-response maxBytes, always-blocked media,
- *  render timeoutMs remain). Non-essential (CSS etc.) keeps the 1× maxBytes cap. Bulk: renderEgressUnits(). */
+ *  per-response `maxBytes` (#143: coupling aborted heavy-SPA bundles mid-load — Notion ~19MB —
+ *  → render_empty). 48MB ≈ 2.5× the heaviest measured SPA yet a firm cumulative backstop
+ *  (per-response maxBytes, blocked media, render timeoutMs remain). Non-essential keeps 1× maxBytes. */
 export const ESSENTIAL_RENDER_BYTES = 48 * 1024 * 1024;
 
 /** Max concurrent render subresource FETCHES; bounds the byte pool's per-pool crossing overage to N× maxBytes (codex R11 P1). */
@@ -64,6 +61,8 @@ export class RenderRouteState {
   status = 200;
   finalUrl = ""; redirects: FetcherResult["redirects"] = [];
   fatal?: RejectResult;
+  /** Set by the renderer at teardown: later abort()s satisfy the browser but stay out of provenance. */
+  teardown = false;
   private mainFrame?: PlaywrightFrame;
   // The two cumulative byte pools (essential + non-essential) bounding render subresource egress.
   private readonly pool: RenderBytePool;
@@ -74,16 +73,15 @@ export class RenderRouteState {
     this.input = input;
     this.actions = actions; this.guard = guard;
     this.mainHost = hostnameOf(input.url);
-    // Computed ONCE from the page URL; the POST first-party scope never expands mid-render (security property).
+    // Computed ONCE from the page URL; the POST first-party scope never expands mid-render.
     this.mainRegistrableDomain = registrableDomain(this.mainHost);
-    // POST body cap = min(postMaxBytes, maxBytes) (codex R9 P2): POST bodies count in the render egress pool, so a body > maxBytes would breach the renderEgressUnits(maxBytes) reservation on low-maxBytes bulk.
+    // POST body cap = min(postMaxBytes, maxBytes) (codex R9 P2 — protects the byte-pool reservation).
     this.postMaxBytes = Math.min(config.render.postMaxBytes(), input.maxBytes);
     this.postSemaphore = new Semaphore(config.render.postConcurrency());
     this.fetchSem = new AsyncSemaphore(RENDER_FETCH_CONCURRENCY);
     this.pool = new RenderBytePool(ESSENTIAL_RENDER_BYTES, input.maxBytes);
-    // Thread the bulk-wall signal into every render subresource fetch (codex R6 P2): an in-flight
-    // route fulfillment runs through the guarded Node fetcher, so page.close() alone can't cancel it —
-    // without the signal it holds a global fetch slot + egresses after the bulk is abandoned.
+    // Thread the abort signal into every subresource fetch (codex R6 P2): page.close() alone
+    // cannot cancel a guarded Node fetch, which would hold a fetch slot + egress post-abandon.
     this.fulfiller = new FetcherRouteFulfiller(input.fetcher, {
       maxBytes: input.maxBytes, timeoutMs: input.timeoutMs, maxHops: input.maxHops,
       ...(input.signal ? { signal: input.signal } : {}),
@@ -206,7 +204,7 @@ export class RenderRouteState {
     try {
       await this.fetchSem.acquire(); // POST fetches bounded by the render fetch semaphore too (codex R13 P2)
       if (!this.postAcquireGate(true)) return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
-      // Reserve + count the body POST re-gate (committed to send) — NOT at dispatch, which held essentialExceeded while queued + blocked other essentials (codex P2).
+      // Reserve + count the body POST re-gate (committed to send), not at dispatch (codex P2).
       this.pool.add(true, plan.body.byteLength);
       if (this.pool.used(true) > this.pool.cap(true)) this.pool.markExceeded(true);
       let outcome;
@@ -216,16 +214,16 @@ export class RenderRouteState {
         if (outcome.countedBytes !== undefined) this.countEgress(true, outcome.countedBytes, url, outcome.countedRedirects ?? [], outcome.countedFinalUrl ?? url); else this.pool.releaseEssential(plan.body.byteLength); // truncated POST response → count (keep body reservation); pre-send reject → release
         return this.abort(route, url, resourceType, outcome.reject.code, "request-blocked");
       }
-      if (this.pool.isExceeded(true)) { // a concurrent POST blew the pool in flight; the POST fully egressed (body+response) — count both + host, then abort (codex R4 P2).
+      if (this.pool.isExceeded(true)) { // concurrent POST blew the pool; it fully egressed — count, then abort (codex R4 P2).
         this.pool.add(true, outcome.body.byteLength);
         this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
         return this.abort(route, url, resourceType, "render_byte_budget", "resource-aborted");
       }
-      if (this.pool.used(true) + outcome.body.byteLength > this.pool.cap(true)) this.pool.markExceeded(true); // crossing POST: fulfill (aborting mid-load 400s the page)
+      if (this.pool.used(true) + outcome.body.byteLength > this.pool.cap(true)) this.pool.markExceeded(true);
       this.pool.add(true, outcome.body.byteLength);
       this.actions.push({ type: "request-forwarded-post", outcome: "ok", url: safeRenderUrl(url), resourceType, method: "POST", bodyBytes: plan.body.byteLength, responseBytes: outcome.body.byteLength });
       this.egressHostsList.noteFulfilled(url, outcome.redirects, outcome.finalUrl);
-      // ACAO:* admits the cross-origin POST response (#111 codex P1). Credentialed CORS (credentials:"include") would need the Origin echoed — known limitation (rare; cookies stripped).
+      // ACAO:* admits the cross-origin POST response (#111); credentialed CORS is a known limitation (rare; cookies stripped).
       await route.fulfill({
         status: outcome.status,
         body: outcome.body,
@@ -244,7 +242,8 @@ export class RenderRouteState {
   }
 
   private async abort(route: PlaywrightRoute, url: string, resourceType: string, reason: string, type: RenderAction["type"] = "request-blocked"): Promise<void> {
-    this.actions.push({ type, reason, url: safeRenderUrl(url), resourceType });
+    // Teardown aborts are not blocks: keep them out of provenance (codex round).
+    if (!this.teardown) this.actions.push({ type, reason, url: safeRenderUrl(url), resourceType });
     await route.abort("blockedbyclient");
   }
 }
