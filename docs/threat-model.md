@@ -163,18 +163,11 @@ the contract reference; this file is the security reasoning.
   guards anything a popup fires before the close lands, so neither layer depends
   on the other's timing. **WebRTC**: both flavors launch Chromium with
   `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` — ICE/STUN is
-  transport-layer UDP below request interception. **Executed calibration
-  (2026-09-01):** the flag STOPS STUN-to-server UDP in the chrome-headless-shell
-  binary (the local in-process flavor's launcher) but is a NO-OP for it in full
-  Chromium `--headless=new` (the hosted sidecar's launcher — byte-identical
-  binaries, per-port attribution: 5/5 datagrams with the flag vs 0/5 in the shell).
-  For the HOSTED browser the Pod-netns default-drop firewall is therefore the
-  load-bearing control (re-verified live: external UDP+TCP time out from inside
-  the pod); the flag is load-bearing only for the local flavor, which is safe for
-  this shape today *because* playwright's default headless launch selects the
-  headless-shell binary — a local launcher that ever runs full Chromium would
-  gain a browser-direct UDP channel. The refusing loopback proxy
-  (`--proxy-server`) kills browser TCP (TURN/TCP included) in both binaries.
+  transport-layer UDP below request interception, so without the flag a rendered
+  page could probe/exfiltrate over UDP (executed PoC: STUN datagrams to a
+  loopback listener); the hosted browser pod's netns firewall blocks this too,
+  but the local in-process flavor has no such firewall, making the flag
+  load-bearing there.
   Image/font/media URLs and known ad/tracker hosts (`src/domain/adblock.ts`,
   a curated OSS-derived apex list) are checked with the same P1 URL/DNS
   private-IP guard and then aborted — the ad script/pixel never loads, so it can
@@ -200,16 +193,15 @@ the contract reference; this file is the security reasoning.
   flushes both Pod-netns OUTPUT chains, sets them default-drop, and allows only
   loopback plus established replies. The untrusted containers receive no
   `NET_ADMIN` capability, so they cannot relax those rules. A
-The gateway's renderer connects SINGLE-FLIGHT: concurrent first renders share
-  one `connectOverCDP` promise (each waiter races it against its OWN deadline and
-  abort signal), the successful attempt is cached and reused for every later
-  render, a failed attempt clears the slot for retry, and a late success with no
-  live waiters is closed so nothing lingers on the relay's connection cap
-  (2026-09-01: the pre-single-flight race leaked one relay WebSocket per raced
-  boot; the relay caps concurrent connections at 32).
-    no-secret, no-capability relay in that same browser boundary exposes fixed Pod
+  no-secret, no-capability relay in that same browser boundary exposes fixed Pod
   port 9223 only to forward into Chromium's loopback-only TCP/9222 listener; it
-  has no configurable target and caps concurrent connections. The
+  has no configurable target and caps concurrent connections. The gateway's renderer connects
+  SINGLE-FLIGHT: concurrent first renders share one `connectOverCDP` promise
+  (each waiter races it against its OWN deadline and abort signal), a successful
+  attempt is cached and reused for every later render, a failed attempt clears
+  the slot for retry, and a late success with no live waiters is closed so
+  nothing lingers on the relay's cap (2026-09-01: the pre-single-flight race
+  leaked one relay WebSocket per raced boot). The
   gateway accepts only an HTTP/9222 Kubernetes Service origin with exact
   `<service>.<namespace>.svc.cluster.local` DNS-1123 shape; parsing and
   allowlisting happen before any hosted state side effect. The deployer owns the
@@ -488,23 +480,6 @@ bulk-call boundary (retryable, whole-call), never swallowed as a per-seed error.
 **Audit.** Per-seed events (one per seed, `tool:"captatum_bulk"` + `bulkId` +
 `url_host`/tier/bytes/transform cost; body allow-list unchanged) + one summary
 event (totals + `capBreaches`). Spend and SSRF traceability preserved per seed.
-
-## Operator env selectors — fail-closed (`src/env-parsing.ts`)
-
-Every integer or boolean operator knob follows the wall-ms contract (#157):
-unset/empty → the default; surrounding whitespace trimmed (the #1 ConfigMap
-contamination); anything else — non-decimal shapes (`1e9`, `0x10`, floats, signs),
-zero, or a value above the knob's ceiling — is a BOOT FAILURE naming the variable,
-never a silent fallback and never a widening. Covers
-`CAPTATUM_GLOBAL_FETCH_CONCURRENCY` (≤128), `CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT`
-(≤32, mirrored as a `BULK_GUARD_CEILINGS` domain clamp), `CAPTATUM_BULK_MAX_CONCURRENCY`
-(≤4 — lowering-only, matching the domain clamp), quota window/seed (≤86400 s / ≤10000), `CAPTATUM_MAX_CONCURRENT_RENDERS` (≤16),
-render POST bytes/concurrency (≤64 MiB / ≤64), `TRANSFORM_TIMEOUT_MS` (≤600000),
-`TRANSFORM_MAX_OUTPUT_TOKENS` (≤100000), `PORT`, and the
-`CAPTATUM_BROWSER_INPROCESS_SANDBOX` boolean (exact `"true"`/`"false"` only).
-Executed 2026-09-01: `"true\n"` previously parsed as `chromiumSandbox:false` — the
-release-blocker condition via the documented #1 contamination — and `1e9`/`0x10`
-were accepted by `Number()` on the then-unbounded knobs.
 
 ## Known Risks
 
