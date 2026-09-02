@@ -66,6 +66,10 @@ export class PlaywrightRenderer implements RenderPort {
   private readonly settleStableMs: number;
   /** Lazily-connected, reused CDP browser. Connecting per-render would leak a WebSocket every call. */
   private cdpBrowser?: PlaywrightBrowser;
+  /** Single-flight connect: concurrent first renders share ONE connectOverCDP promise — the
+   * assignment loser otherwise leaks a live CDP WebSocket against the relay's 32-connection cap
+   * (executed 2026-09-01; the deadline-race cleanup is codex P2 r2, this is its sibling). */
+  private cdpConnecting?: Promise<PlaywrightBrowser>;
 
   constructor(deps: PlaywrightRendererDeps = {}) {
     this.loadPlaywright = deps.loadPlaywright ?? defaultLoadPlaywright;
@@ -94,36 +98,7 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        if (!this.cdpBrowser) {
-          // Connect over the RESOLVED address: Chromium's DevTools server 500s any
-          // request whose Host header is not an IP/localhost, so dialing the Service
-          // DNS name fails at /json/version (observed in production; see cdp-connect.ts).
-          // The resolution + connect run BEFORE the per-request timeout bookkeeping
-          // below, so they carry their own bound: the render deadline AND the caller's
-          // abort signal (the bulk wall) — a stalled DNS lookup must not hold a render
-          // slot past either (codex P1).
-          const endpoint = this.cdpEndpoint; // narrowed for the closure below
-          if (input.signal?.aborted) throw new Error("render_timeout");
-          const connect = (async () => playwright.chromium.connectOverCDP(
-            await resolveCdpConnectUrl(endpoint, this.cdpResolver),
-          ))();
-          let connected = false;
-          try {
-            this.cdpBrowser = await withTimeout(
-              input.signal
-                ? Promise.race([connect, abortRejection(input.signal)])
-                : connect,
-              remaining(),
-            );
-            connected = true;
-          } finally {
-            // Lost the race (deadline/abort): a late-arriving browser must not
-            // leak a live CDP WebSocket against the relay's 32-connection cap
-            // (codex P2 r2) — close it when it lands and swallow the rejection.
-            if (!connected) void connect.then((b) => b.close().catch(() => {})).catch(() => {});
-          }
-        }
-        browser = this.cdpBrowser;
+        browser = await this.connectCdpSingleFlight(playwright, input, remaining());
       } else {
         browser = await playwright.chromium.launch({
           headless: true,
@@ -171,8 +146,7 @@ export class PlaywrightRenderer implements RenderPort {
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: remaining() }),
         remaining(),
       );
-      // Idle-aware settle: networkidle then a content-stability dwell. The networkidle cap RESERVES
-      // settleMinDwellMs for the content-stability phase; a 0 cap SKIPS the wait (timeout:0 = no-timeout hang).
+      // Idle-aware settle: networkidle then a content-stability dwell; a 0 cap skips the wait.
       const networkidleCap = Math.min(this.settleMs, Math.max(0, remaining() - this.settleMinDwellMs));
       if (networkidleCap > 0) await page.waitForLoadState("networkidle", { timeout: networkidleCap }).catch(() => {});
       const settleCap = Math.min(this.settleMs, remaining());
@@ -208,6 +182,39 @@ export class PlaywrightRenderer implements RenderPort {
       if (ownsBrowser) await closeQuietly(browser);
     }
   }
+
+  /** Connect over the RESOLVED address (Chromium's DevTools server 500s non-IP Host headers —
+   * see cdp-connect.ts), bounded by the render deadline AND the caller's abort signal (codex P1).
+   * Single-flight: concurrent first renders await one shared promise, so the assignment loser
+   * cannot leak a CDP WebSocket on the relay; on failure the promise is cleared for a retry and
+   * a late-arriving browser is closed (codex P2 r2 semantics). */
+  private connectCdpSingleFlight(
+    playwright: PlaywrightModule,
+    input: RenderInput,
+    remainingMs: number,
+  ): Promise<PlaywrightBrowser> {
+    if (this.cdpBrowser) return Promise.resolve(this.cdpBrowser);
+    if (!this.cdpConnecting) {
+      const endpoint = this.cdpEndpoint;
+      if (!endpoint || input.signal?.aborted) return Promise.reject(new Error("render_timeout"));
+      const connect = (async () => playwright.chromium.connectOverCDP(
+        await resolveCdpConnectUrl(endpoint, this.cdpResolver),
+      ))();
+      this.cdpConnecting = withTimeout(
+        input.signal ? Promise.race([connect, abortRejection(input.signal)]) : connect,
+        remainingMs,
+      );
+      void this.cdpConnecting.then(
+        (browser) => { this.cdpBrowser = browser; },
+        () => {
+          // Lost the race or failed: close a late-arriving browser (codex P2 r2), allow retry.
+          void connect.then((b) => b.close().catch(() => {})).catch(() => {});
+          this.cdpConnecting = undefined;
+        },
+      );
+    }
+    return this.cdpConnecting;
+  }
 }
 
 async function installPageControls(
@@ -235,11 +242,6 @@ async function installPageControls(
     page.on("websocket", (value) => closeLegacyWebSocket(value, actions));
   }
 }
-
-
-
-
-
 
 async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
   try { return await import("playwright") as unknown as PlaywrightModule; }
