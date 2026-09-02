@@ -163,11 +163,18 @@ the contract reference; this file is the security reasoning.
   guards anything a popup fires before the close lands, so neither layer depends
   on the other's timing. **WebRTC**: both flavors launch Chromium with
   `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` — ICE/STUN is
-  transport-layer UDP below request interception, so without the flag a rendered
-  page could probe/exfiltrate over UDP (executed PoC: STUN datagrams to a
-  loopback listener); the hosted browser pod's netns firewall blocks this too,
-  but the local in-process flavor has no such firewall, making the flag
-  load-bearing there.
+  transport-layer UDP below request interception. **Executed calibration
+  (2026-09-01):** the flag STOPS STUN-to-server UDP in the chrome-headless-shell
+  binary (the local in-process flavor's launcher) but is a NO-OP for it in full
+  Chromium `--headless=new` (the hosted sidecar's launcher — byte-identical
+  binaries, per-port attribution: 5/5 datagrams with the flag vs 0/5 in the shell).
+  For the HOSTED browser the Pod-netns default-drop firewall is therefore the
+  load-bearing control (re-verified live: external UDP+TCP time out from inside
+  the pod); the flag is load-bearing only for the local flavor, which is safe for
+  this shape today *because* playwright's default headless launch selects the
+  headless-shell binary — a local launcher that ever runs full Chromium would
+  gain a browser-direct UDP channel. The refusing loopback proxy
+  (`--proxy-server`) kills browser TCP (TURN/TCP included) in both binaries.
   Image/font/media URLs and known ad/tracker hosts (`src/domain/adblock.ts`,
   a curated OSS-derived apex list) are checked with the same P1 URL/DNS
   private-IP guard and then aborted — the ad script/pixel never loads, so it can

@@ -22,7 +22,7 @@ days.
 
 ## Supported versions
 
-Only the **latest release** line receives security fixes (currently **v0.11.0**).
+Only the **latest release** line receives security fixes. **Known-affected disclosure (2026-09-02):** v0.20.2 — the newest release — is affected by a sensitive-content scanner bypass (percent-encoded credential keys on relative references egress to a hosted LLM; reproduced against v0.20.2) and by the pre-auth surface issues fixed after its release. The fixes are merged on `main` and ship in the next patch; if you rely on `output: summary|extract` against non-public content before then, prefer `output: raw` or a local transform provider.
 Pin to a released tag; `main` is unreleased and may change.
 
 ## Threat model (authoritative)
@@ -36,8 +36,15 @@ controls" is the contract reference. Key invariants:
   (resolve-once → pin-to-IP → revalidate each hop; exhaustive IANA private-IP
   blocking).
 - **Tier-3 browser:** runs in a separate sidecar container (hosted); every browser
-  request is fulfilled through `guardedFetch` (`route.fulfill`, never
-  `route.continue`), so the browser makes no direct egress.
+  HTTP/subresource request is fulfilled through `guardedFetch` (`route.fulfill`,
+  never `route.continue`). Transport-layer egress below request interception is
+  not reachable by it: on local, WebRTC STUN/TURN UDP is blocked by the
+  `disable_non_proxied_udp` Chromium flag and browser TCP (TURN/TCP included) by
+  a refusing loopback proxy (both verified in the headless-shell launcher; other
+  UDP-based transports such as QUIC are unverified locally); on hosted, ALL
+  transport egress below interception is stopped only by the browser Pod's
+  egress firewall — a deployment prerequisite this repo does not ship (without
+  an equivalent boundary, hosted Tier-3 is unsupported).
 - **Auth:** the hosted flavor authenticates every `/mcp` request via gateway OAuth
   (PKCE S256, hash-only token storage, replay-revoking refresh rotation,
   per-request scope enforcement).
@@ -51,9 +58,12 @@ controls" is the contract reference. Key invariants:
 - Tier-1 HTTPS intentionally does **not** use the TLS fingerprint (it uses a
   checked-IP Node path to preserve rebinding-proof SSRF).
 - Prompt-injection fencing applies to `summary`/`extract`, **not** `output: raw`.
-- One disclosed residual: a char-class/metachar ReDoS in extract-schema validation
-  (authenticated callers only, low risk). Tracked for closure with RE2 or a worker
-  timeout.
+- ~~One disclosed residual: a char-class/metachar ReDoS in extract-schema
+  validation~~ **Retired in 0.20.2**: pattern EXECUTION is now wall-clock-bounded
+  on a worker thread and fails closed on timeout, and pattern CONTENT is rejected
+  at the input boundary before any fetch/LLM spend (the input-boundary heuristic
+  remains shape-based, so a heuristic-passing pattern can still burn worker time —
+  bounded, not unbounded).
 
 ## Supply chain
 
