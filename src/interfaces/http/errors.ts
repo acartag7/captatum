@@ -27,18 +27,27 @@ export function sendHttpError(reply: FastifyReply, error: unknown, config: Bridg
  * stays 500 (unknown errors never leak internals).
  */
 function frameworkBodyError(error: unknown): { status: number; code: string; message: string } | undefined {
-  const e = error as { statusCode?: unknown };
-  // The request-body family reaches the handler with its real 4xx in statusCode —
-  // sometimes as the FST_ERR_CTP_* error, sometimes as the raw V8 SyntaxError
-  // (invalid JSON) — so classify by the status Fastify already decided.
+  const e = error as { statusCode?: unknown; code?: unknown };
+  // ONLY the request-body family remaps: an FST_ERR_CTP_* body error, or the raw V8
+  // SyntaxError Fastify attaches statusCode 400 to for invalid JSON. Other 400s
+  // (FST_ERR_BAD_URL, deliberately-thrown route errors) are NOT body errors and keep
+  // the generic 500 handling (codex round: status-only matching mislabeled them).
   if (typeof e?.statusCode !== "number") return undefined;
+  const code = typeof e.code === "string" ? e.code : "";
   if (e.statusCode === 400) {
-    return { status: 400, code: "invalid_json", message: "Request body is not valid JSON" };
+    const isBodyParse = code === "FST_ERR_CTP_INVALID_JSON_BODY"
+      || code === "FST_ERR_CTP_INVALID_JSON"
+      || code === "FST_ERR_CTP_EMPTY_JSON_BODY"
+      || code === "FST_ERR_CTP_INVALID_CONTENT_LENGTH"
+      || (error instanceof SyntaxError && code === "");
+    return isBodyParse
+      ? { status: 400, code: "invalid_json", message: "Request body is not valid JSON" }
+      : undefined;
   }
-  if (e.statusCode === 413) {
+  if (e.statusCode === 413 && code === "FST_ERR_CTP_BODY_TOO_LARGE") {
     return { status: 413, code: "payload_too_large", message: "Request body exceeds the size limit" };
   }
-  if (e.statusCode === 415) {
+  if (e.statusCode === 415 && (code === "FST_ERR_CTP_INVALID_MEDIA_TYPE" || code === "FST_ERR_CTP_EMPTY_BODY")) {
     return { status: 415, code: "unsupported_media_type", message: "Unsupported content type for this endpoint" };
   }
   return undefined;
