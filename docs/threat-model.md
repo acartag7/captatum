@@ -200,7 +200,14 @@ the contract reference; this file is the security reasoning.
   flushes both Pod-netns OUTPUT chains, sets them default-drop, and allows only
   loopback plus established replies. The untrusted containers receive no
   `NET_ADMIN` capability, so they cannot relax those rules. A
-  no-secret, no-capability relay in that same browser boundary exposes fixed Pod
+The gateway's renderer connects SINGLE-FLIGHT: concurrent first renders share
+  one `connectOverCDP` promise (each waiter races it against its OWN deadline and
+  abort signal), the successful attempt is cached and reused for every later
+  render, a failed attempt clears the slot for retry, and a late success with no
+  live waiters is closed so nothing lingers on the relay's connection cap
+  (2026-09-01: the pre-single-flight race leaked one relay WebSocket per raced
+  boot; the relay caps concurrent connections at 32).
+    no-secret, no-capability relay in that same browser boundary exposes fixed Pod
   port 9223 only to forward into Chromium's loopback-only TCP/9222 listener; it
   has no configurable target and caps concurrent connections. The
   gateway accepts only an HTTP/9222 Kubernetes Service origin with exact

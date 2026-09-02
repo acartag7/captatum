@@ -395,7 +395,11 @@ one `fail` entry + a `failures[]` row, NOT a tool-level error.
 
 1. `CaptatumContext` gains optional `signal?: AbortSignal` (moved out of
    `captatum.ts` to `src/application/ports/captatum-context.ts`). **Consumed by the
-   bulk runtime** — `execute` threads `context.signal` into the Tier-1 `fetchGuarded`
+   bulk runtime** — and, since 2026-09, composed with an internal render-lifetime
+   controller on EVERY render (in-flight subresource fetches cancel when the render's
+   outcome is settled, so single-fetch egress no longer outlives the returned result;
+   caller-visible `context.signal` semantics unchanged, teardown aborts contribute no
+   provenance actions) — `execute` threads `context.signal` into the Tier-1 `fetchGuarded`
    + the Ashby-embed resolver (the two live fetch paths a bulk seed takes), and the
    guarded fetcher composes it with its own per-tier timeout via `AbortSignal.any`
    so the bulk wall deadline aborts in-flight fetches (surfaced as a per-seed
@@ -404,7 +408,10 @@ one `fail` entry + a `failures[]` row, NOT a tool-level error.
    composed with it); transform abort is dispatch-level (raceWallAbort abandons slow LLM calls).
    The Tier-2 board short-circuit is not signal-
    threaded (it does no fetch for a non-board URL, and bulk pre-rejects board roots).
-   Additive: single-fetch callers pass nothing and are unchanged.
+   Additive at the API level: single-fetch callers still pass nothing — but they are
+   NOT unchanged at runtime: every render now composes an INTERNAL render-lifetime
+   abort (see the parenthetical above), so a no-signal single-fetch render's
+   in-flight subresources cancel when its result settles.
 2. `ToolAuditEvent.tool` widens to `"captatum" | "captatum_bulk"` and gains
    optional `bulkId?: string`. Bulk emits **per-seed** events (one per seed,
    `tool:"captatum_bulk"` + `bulkId` + `url_host`) plus one **summary** event

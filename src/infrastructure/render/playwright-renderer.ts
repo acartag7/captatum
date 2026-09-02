@@ -66,6 +66,8 @@ export class PlaywrightRenderer implements RenderPort {
   private readonly settleStableMs: number;
   /** Lazily-connected, reused CDP browser. Connecting per-render would leak a WebSocket every call. */
   private cdpBrowser?: PlaywrightBrowser;
+  private cdpConnecting?: Promise<PlaywrightBrowser>; // single-flight shared attempt
+  private cdpWaiters = 0; // live waiters: >0 caches a late success, 0 closes/detaches it
 
   constructor(deps: PlaywrightRendererDeps = {}) {
     this.loadPlaywright = deps.loadPlaywright ?? defaultLoadPlaywright;
@@ -80,10 +82,11 @@ export class PlaywrightRenderer implements RenderPort {
 
   async render(input: RenderInput): Promise<RenderOutput> {
     const actions: RenderAction[] = [serviceWorkerAction()];
-    const state = new RenderRouteState(input, actions, this.guard);
-    // ONE deadline for the whole render (codex P1 r2): established before CDP
-    // resolution so DNS/connect, navigation, and settling share the single
-    // per-tier timeoutMs budget instead of each phase getting a fresh full one.
+    // Render-lifetime abort: single-fetch subresource fetches cancel at outcome-settle.
+    const renderLifetime = new AbortController();
+    const scopedInput: RenderInput = { ...input, signal: input.signal ? AbortSignal.any([input.signal, renderLifetime.signal]) : renderLifetime.signal };
+    const state = new RenderRouteState(scopedInput, actions, this.guard);
+    // ONE deadline for the whole render (codex P1 r2): every phase shares the per-tier timeoutMs.
     const startedAt = Date.now();
     const remaining = (): number => Math.max(0, input.timeoutMs - (Date.now() - startedAt));
     let browser: PlaywrightBrowser | undefined;
@@ -94,50 +97,18 @@ export class PlaywrightRenderer implements RenderPort {
     try {
       const playwright = await this.loadPlaywright();
       if (this.cdpEndpoint) {
-        if (!this.cdpBrowser) {
-          // Connect over the RESOLVED address: Chromium's DevTools server 500s any
-          // request whose Host header is not an IP/localhost, so dialing the Service
-          // DNS name fails at /json/version (observed in production; see cdp-connect.ts).
-          // The resolution + connect run BEFORE the per-request timeout bookkeeping
-          // below, so they carry their own bound: the render deadline AND the caller's
-          // abort signal (the bulk wall) — a stalled DNS lookup must not hold a render
-          // slot past either (codex P1).
-          const endpoint = this.cdpEndpoint; // narrowed for the closure below
-          if (input.signal?.aborted) throw new Error("render_timeout");
-          const connect = (async () => playwright.chromium.connectOverCDP(
-            await resolveCdpConnectUrl(endpoint, this.cdpResolver),
-          ))();
-          let connected = false;
-          try {
-            this.cdpBrowser = await withTimeout(
-              input.signal
-                ? Promise.race([connect, abortRejection(input.signal)])
-                : connect,
-              remaining(),
-            );
-            connected = true;
-          } finally {
-            // Lost the race (deadline/abort): a late-arriving browser must not
-            // leak a live CDP WebSocket against the relay's 32-connection cap
-            // (codex P2 r2) — close it when it lands and swallow the rejection.
-            if (!connected) void connect.then((b) => b.close().catch(() => {})).catch(() => {});
-          }
-        }
-        browser = this.cdpBrowser;
+        browser = await this.connectCdpSingleFlight(playwright, input, remaining());
       } else {
         browser = await playwright.chromium.launch({
           headless: true,
           chromiumSandbox: this.chromiumSandbox,
           env: {},
           // Transport-layer egress page.route cannot see, killed at BOTH layers:
-          // (1) WebRTC ICE/STUN over UDP — forbidden via the IP-handling policy
-          // (the hosted browser pod's netns firewall also blocks this; the local
-          // in-process flavor has no firewall, so the flag is load-bearing
-          // there); (2) WebRTC TURN over TCP (codex P1 r4: disable_non_proxied_udp
-          // still permits direct TCP to an attacker-chosen TURN server) — a dead
-          // loopback proxy sends every browser-originated TCP connection,
-          // TURN included, to a refusing socket. Route-fulfilled content never
-          // touches the network, so rendering is unaffected.
+          // (1) WebRTC ICE/STUN UDP — forbidden by the IP-handling policy (load-bearing
+          // only where there is no netns firewall, i.e. the local in-process flavor);
+          // (2) WebRTC TURN over TCP (codex P1 r4) — a dead loopback proxy refuses every
+          // browser-originated TCP connection, TURN included. Route-fulfilled content
+          // never touches the network, so rendering is unaffected.
           args: [
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             "--proxy-server=http://127.0.0.1:1",
@@ -150,8 +121,7 @@ export class PlaywrightRenderer implements RenderPort {
         acceptDownloads: false,
       });
       page = await context.newPage();
-      // CANCEL the render on the bulk wall signal (codex R4 P2): close the page so an abandoned
-      // render can't keep a browser slot + egress after the bulk returns (close rejects goto/settle).
+      // CANCEL on abort (codex R4 P2): close the page so an abandoned render frees its slot.
       if (input.signal) {
         onSignalAbort = (): void => { void page?.close().catch(() => {}); };
         if (input.signal.aborted) onSignalAbort();
@@ -159,20 +129,16 @@ export class PlaywrightRenderer implements RenderPort {
       }
       state.setMainFrame(page.mainFrame());
       await installPageControls(context, page, actions, input.timeoutMs);
-      // POPUP-EGRESS FIX: route at the CONTEXT level. page.route covers only the
-      // page and its frames — a window.open / target=_blank popup is a NEW target
-      // whose requests egress browser-direct, bypassing the guarded FetcherPort
-      // entirely (executed PoC: 5 uninstrumented connections incl. loopback
-      // navigations). Context routing intercepts every page in the context, so
-      // anything a popup fires before it is closed still resolves through the
-      // same guarded fulfillment as any subresource.
+      // POPUP-EGRESS FIX: route at the CONTEXT level — page.route covers only the page
+      // and its frames; a popup is a NEW target egressing browser-direct past the guarded
+      // FetcherPort (executed PoC: 5 uninstrumented connections). Context routing covers
+      // every page in the context, popups included.
       await context.route("**/*", (route) => state.handle(route));
       const response = await withTimeout(
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: remaining() }),
         remaining(),
       );
-      // Idle-aware settle: networkidle then a content-stability dwell. The networkidle cap RESERVES
-      // settleMinDwellMs for the content-stability phase; a 0 cap SKIPS the wait (timeout:0 = no-timeout hang).
+      // Idle-aware settle: networkidle then a content-stability dwell (0 cap skips).
       const networkidleCap = Math.min(this.settleMs, Math.max(0, remaining() - this.settleMinDwellMs));
       if (networkidleCap > 0) await page.waitForLoadState("networkidle", { timeout: networkidleCap }).catch(() => {});
       const settleCap = Math.min(this.settleMs, remaining());
@@ -192,21 +158,63 @@ export class PlaywrightRenderer implements RenderPort {
         }
       } catch { /* iframe capture best-effort */ }
       const domTextLength = await liveDomTextLength(page); // #154: live DOM text (shadow-DOM/computed)
-      // Advisory byte cap: truncate rendered HTML at the cap + keep it (with a note), not drop it.
+      // Advisory byte cap: truncate at the cap + keep it (with a note), not drop it.
       const { bytes, truncated } = capRenderedBytes(content, input.maxBytes);
       const notice: ProvenanceError | undefined = truncated
-        ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }
-        : undefined;
+        ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` } : undefined;
       return renderSuccess(input, page.url(), response?.status() ?? state.status, bytes, state, notice, domTextLength);
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
+      state.teardown = true; // teardown first: abort rejections stay out of provenance
+      renderLifetime.abort();
       if (onSignalAbort && input.signal) input.signal.removeEventListener("abort", onSignalAbort);
       await closeQuietly(page);
       await closeQuietly(context);
       // Only close a browser we launched; the remote CDP browser is shared + long-lived.
       if (ownsBrowser) await closeQuietly(browser);
     }
+  }
+
+  /** Connect over the RESOLVED address (DevTools 500s non-IP Hosts — cdp-connect.ts).
+   * Single-flight: one shared raw attempt, cached on success while owned+awaited, closed on
+   * late arrival, cleared on failure OR when its last waiter expires (a stalled connect
+   * detaches so recovery needs no restart). Each waiter races it against its OWN deadline. */
+  private connectCdpSingleFlight(
+    playwright: PlaywrightModule,
+    input: RenderInput,
+    remainingMs: number,
+  ): Promise<PlaywrightBrowser> {
+    if (this.cdpBrowser) return Promise.resolve(this.cdpBrowser);
+    if (input.signal?.aborted) return Promise.reject(new Error("render_timeout"));
+    if (!this.cdpConnecting) {
+      const endpoint = this.cdpEndpoint;
+      if (!endpoint) return Promise.reject(new Error("render_timeout"));
+      const connect: Promise<PlaywrightBrowser> = (async () => playwright.chromium.connectOverCDP(
+        await resolveCdpConnectUrl(endpoint, this.cdpResolver),
+      ))();
+      this.cdpConnecting = connect;
+      void connect.then((browser) => {
+        // Cache only while THIS attempt owns the slot AND someone waits; else close the
+        // late arrival (codex P2 r2 — nothing lingers on the relay cap).
+        if (this.cdpConnecting === connect && this.cdpWaiters > 0) { this.cdpBrowser = browser; return; }
+        if (this.cdpConnecting === connect) this.cdpConnecting = undefined;
+        void browser.close().catch(() => {});
+      }, () => { if (this.cdpConnecting === connect) this.cdpConnecting = undefined; });
+    }
+    this.cdpWaiters++;
+    const slot = this.cdpConnecting; // the attempt THIS waiter joined (own or inherited)
+    const attempt = withTimeout(
+      input.signal ? Promise.race([slot, abortRejection(input.signal)]) : slot,
+      remainingMs,
+    );
+    void attempt.finally(() => {
+      this.cdpWaiters--;
+      // Last waiter expired while this attempt still pends: DETACH it — a stalled connect
+      // must not wedge every later render (its late arrival closes above; no restart).
+      if (this.cdpWaiters === 0 && slot && this.cdpConnecting === slot) this.cdpConnecting = undefined;
+    }).catch(() => {});
+    return attempt;
   }
 }
 
@@ -235,11 +243,6 @@ async function installPageControls(
     page.on("websocket", (value) => closeLegacyWebSocket(value, actions));
   }
 }
-
-
-
-
-
 
 async function defaultLoadPlaywright(): Promise<PlaywrightModule> {
   try { return await import("playwright") as unknown as PlaywrightModule; }
