@@ -151,6 +151,15 @@ There is no separate `bulk:read` scope in v1 (founder decision 7 — bulk reuses
 | `maxTransformCostUsd` | 0.50 (CONFIGURABLE per-call; clamped) | cost amplification — global, re-checked after each transform |
 | `perSeedTransformCostUsd` | 0.05 (CONFIGURABLE per-call; clamped) | cost amplification — concurrent-overshoot bound. **Clamped to `maxTransformCostUsd / maxConcurrency`** (disclosed): up to `maxConcurrency` transforms run before the post-transform global re-check, so sizing per-seed to `global / concurrency` keeps the first in-flight wave ≤ the caller's ceiling (the invariant `maxConcurrency × perSeed ≤ maxTransformCostUsd`). A runtime reservation in the budget tracker (PR 2) tightens this further. |
 
+**Operator env selectors are strict (fail-closed at boot).** Unset/empty → default;
+trimmed whitespace tolerated; any other shape (`1e9`, `0x10`, float, sign, garbage)
+or an above-ceiling value throws at boot naming the variable — no silent fallback,
+and no ConfigMap path widens a bound past its ceiling. Ceilings live beside the
+knobs in `src/config.ts` (`CAPTATUM_GLOBAL_FETCH_CONCURRENCY` ≤ 128,
+`CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT` ≤ 32 — also a `BULK_GUARD_CEILINGS` domain
+clamp now, `CAPTATUM_BULK_QUOTA_SEED_LIMIT` ≤ 10000); `CAPTATUM_BROWSER_INPROCESS_SANDBOX`
+accepts exactly `"true"`/`"false"`.
+
 **Operator config (`CAPTATUM_BULK_*`).** The deployment knobs — `CAPTATUM_BULK_ENABLED`,
 `CAPTATUM_BULK_MAX_PER_HOST_INFLIGHT`, `CAPTATUM_BULK_CRAWL_DELAY_MS`,
 `CAPTATUM_BULK_MAX_CONCURRENCY`, `CAPTATUM_GLOBAL_FETCH_CONCURRENCY`,
