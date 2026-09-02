@@ -22,7 +22,7 @@ days.
 
 ## Supported versions
 
-Only the **latest release** line receives security fixes — currently **v0.20.2**. Earlier 0.20.x patches do not carry the latest security fixes (0.20.2 added the popup-egress, credential-URL, WHATWG-backslash, and schema-ReDoS fixes over 0.20.0/0.20.1); upgrade to the newest patch rather than staying on an older v0.20.
+Only the **latest release** line receives security fixes. **Known-affected disclosure (2026-09-02):** v0.20.2 — the newest release — is affected by a sensitive-content scanner bypass (percent-encoded credential keys on relative references egress to a hosted LLM; reproduced against v0.20.2) and by the pre-auth surface issues fixed after its release. The fixes are merged on `main` and ship in the next patch; if you rely on `output: summary|extract` against non-public content before then, prefer `output: raw` or a local transform provider.
 Pin to a released tag; `main` is unreleased and may change.
 
 ## Threat model (authoritative)
