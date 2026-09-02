@@ -1,9 +1,10 @@
 import type { FetcherResult, Redirect, RejectResult } from "../../application/ports/fetcher.ts";
 import type { RenderAction, RenderInput } from "../../application/ports/renderer.ts";
-import { registrableDomain } from "../../domain/registrable-domain.ts";
 import { config } from "../../config.ts";
 import type { PlaywrightFrame, PlaywrightRequest, PlaywrightRoute } from "./playwright-types.ts";
-import { safeRenderUrl, type BrowserUrlGuard } from "./browser-url-guard.ts";
+import { type BrowserUrlGuard } from "./browser-url-guard.ts";
+import { registrableDomain } from "../../domain/registrable-domain.ts";
+import { abortRoute } from "./route-abort.ts";
 import { FetcherRouteFulfiller, type RouteFulfiller } from "./route-fulfill.ts";
 import { RenderBytePool } from "./render-byte-pool.ts";
 import { authorizePostForward, CORS_ALLOW_ORIGIN, materializePostForward, planOptionsPreflight } from "./post-forward.ts";
@@ -80,8 +81,7 @@ export class RenderRouteState {
     this.postSemaphore = new Semaphore(config.render.postConcurrency());
     this.fetchSem = new AsyncSemaphore(RENDER_FETCH_CONCURRENCY);
     this.pool = new RenderBytePool(ESSENTIAL_RENDER_BYTES, input.maxBytes);
-    // Thread the abort signal into every subresource fetch (codex R6 P2): page.close() alone
-    // cannot cancel a guarded Node fetch, which would hold a fetch slot + egress post-abandon.
+    // Abort signal into every subresource fetch (codex R6 P2 — page.close() cannot cancel).
     this.fulfiller = new FetcherRouteFulfiller(input.fetcher, {
       maxBytes: input.maxBytes, timeoutMs: input.timeoutMs, maxHops: input.maxHops,
       ...(input.signal ? { signal: input.signal } : {}),
@@ -127,8 +127,7 @@ export class RenderRouteState {
     const request = route.request();
     const url = request.url();
     const resourceType = request.resourceType();
-    // The main-frame document navigation is the page the user asked to fetch — never an ad/tracker
-    // (even when its host is a blocklisted vendor apex like amplitude.com); owns provenance below.
+    // The main-frame navigation is the page the user asked to fetch (never an ad/tracker); owns provenance.
     const mainFrameNav = isNavigation(request) && this.isMainFrame(request);
     if (!mainFrameNav && shouldAbortWithoutBody(url, resourceType, this.mainHost)) {
       return this.abortBlockedType(route, url, resourceType);
@@ -236,14 +235,15 @@ export class RenderRouteState {
   }
 
   private async abortBlockedType(route: PlaywrightRoute, url: string, resourceType: string): Promise<void> {
-    const blocked = await this.guard.check(url, AbortSignal.timeout(this.input.timeoutMs));
+    // Guard check composes the render signal — a fresh timeout would outlive the result.
+    const blocked = await this.guard.check(url, this.input.signal
+      ? AbortSignal.any([AbortSignal.timeout(this.input.timeoutMs), this.input.signal])
+      : AbortSignal.timeout(this.input.timeoutMs));
     const reason = blocked?.code ?? `blocked_${resourceType}`;
     await this.abort(route, url, resourceType, reason, "resource-aborted");
   }
 
-  private async abort(route: PlaywrightRoute, url: string, resourceType: string, reason: string, type: RenderAction["type"] = "request-blocked"): Promise<void> {
-    // Teardown aborts are not blocks: keep them out of provenance (codex round).
-    if (!this.teardown) this.actions.push({ type, reason, url: safeRenderUrl(url), resourceType });
-    await route.abort("blockedbyclient");
+  private abort(route: PlaywrightRoute, url: string, resourceType: string, reason: string, type?: RenderAction["type"]): Promise<void> {
+    return abortRoute(route, { actions: this.actions, teardown: this.teardown, url, resourceType, reason, type });
   }
 }
