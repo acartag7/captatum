@@ -51,9 +51,12 @@ controls" is the contract reference. Key invariants:
 - Tier-1 HTTPS intentionally does **not** use the TLS fingerprint (it uses a
   checked-IP Node path to preserve rebinding-proof SSRF).
 - Prompt-injection fencing applies to `summary`/`extract`, **not** `output: raw`.
-- One disclosed residual: a char-class/metachar ReDoS in extract-schema validation
-  (authenticated callers only, low risk). Tracked for closure with RE2 or a worker
-  timeout.
+- ~~One disclosed residual: a char-class/metachar ReDoS in extract-schema
+  validation~~ **Retired in 0.20.2**: pattern EXECUTION is now wall-clock-bounded
+  on a worker thread and fails closed on timeout, and pattern CONTENT is rejected
+  at the input boundary before any fetch/LLM spend (the input-boundary heuristic
+  remains shape-based, so a heuristic-passing pattern can still burn worker time —
+  bounded, not unbounded).
 
 ## Supply chain
 
