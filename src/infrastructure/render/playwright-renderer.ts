@@ -184,36 +184,34 @@ export class PlaywrightRenderer implements RenderPort {
   }
 
   /** Connect over the RESOLVED address (Chromium's DevTools server 500s non-IP Host headers —
-   * see cdp-connect.ts), bounded by the render deadline AND the caller's abort signal (codex P1).
-   * Single-flight: concurrent first renders await one shared promise, so the assignment loser
-   * cannot leak a CDP WebSocket on the relay; on failure the promise is cleared for a retry and
-   * a late-arriving browser is closed (codex P2 r2 semantics). */
+   * see cdp-connect.ts). Single-flight: the SHARED raw connect promise is started once and
+   * cached on success (a late success IS the cache, not a leak); on failure the slot is
+   * cleared so a later render retries. Each waiter races the shared attempt against ITS OWN
+   * deadline + abort signal (codex round: a short-budget render must never hang on the
+   * initiating caller's longer connect window). */
   private connectCdpSingleFlight(
     playwright: PlaywrightModule,
     input: RenderInput,
     remainingMs: number,
   ): Promise<PlaywrightBrowser> {
     if (this.cdpBrowser) return Promise.resolve(this.cdpBrowser);
+    if (input.signal?.aborted) return Promise.reject(new Error("render_timeout"));
     if (!this.cdpConnecting) {
       const endpoint = this.cdpEndpoint;
-      if (!endpoint || input.signal?.aborted) return Promise.reject(new Error("render_timeout"));
-      const connect = (async () => playwright.chromium.connectOverCDP(
+      if (!endpoint) return Promise.reject(new Error("render_timeout"));
+      const connect: Promise<PlaywrightBrowser> = (async () => playwright.chromium.connectOverCDP(
         await resolveCdpConnectUrl(endpoint, this.cdpResolver),
       ))();
-      this.cdpConnecting = withTimeout(
-        input.signal ? Promise.race([connect, abortRejection(input.signal)]) : connect,
-        remainingMs,
-      );
-      void this.cdpConnecting.then(
+      this.cdpConnecting = connect;
+      connect.then(
         (browser) => { this.cdpBrowser = browser; },
-        () => {
-          // Lost the race or failed: close a late-arriving browser (codex P2 r2), allow retry.
-          void connect.then((b) => b.close().catch(() => {})).catch(() => {});
-          this.cdpConnecting = undefined;
-        },
+        () => { if (this.cdpConnecting === connect) this.cdpConnecting = undefined; },
       );
     }
-    return this.cdpConnecting;
+    return withTimeout(
+      input.signal ? Promise.race([this.cdpConnecting, abortRejection(input.signal)]) : this.cdpConnecting,
+      remainingMs,
+    );
   }
 }
 

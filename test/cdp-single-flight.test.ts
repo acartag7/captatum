@@ -108,3 +108,25 @@ test("sequential renders after a successful connect reuse the cached browser", a
   assert.equal(first.rendered, true);
   assert.equal(second.rendered, true);
 });
+
+test("a short-budget waiter fails on its OWN deadline, not the initiator's", async () => {
+  const counter = { calls: 0 };
+  const mod = fakePlaywright(120, counter); // slow connect, then context boom
+  const renderer = new PlaywrightRenderer({
+    loadPlaywright: async () => mod,
+    cdpEndpoint: "http://chromium.captatum.svc.cluster.local:9222",
+    cdpResolver: async () => "127.0.0.1",
+  });
+  const t = Date.now();
+  const slow = renderer.render(input({ url: "https://a.test/slow", timeoutMs: 10000 }) as never);
+  const fast = renderer.render(input({ url: "https://a.test/fast", timeoutMs: 30 }) as never);
+  const [slowOut, fastOut] = await Promise.allSettled([slow, fast]);
+  const wall = Date.now() - t;
+  assert.equal(fastOut.status, "fulfilled", "fast render must settle (as a failure), not hang");
+  const fastResult = fastOut.value as { rendered: boolean; code?: string };
+  assert.equal(fastResult.rendered, false);
+  assert.equal(fastResult.code, "timeout", "withTimeout rejects with its timeout code at the waiter's own budget");
+  assert.ok(wall < 2000, `fast waiter should fail near its own 30ms budget (wall ${wall}ms)`);
+  assert.ok(counter.calls >= 1, "the shared attempt ran");
+  void slowOut;
+});
