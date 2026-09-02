@@ -36,8 +36,13 @@ controls" is the contract reference. Key invariants:
   (resolve-once → pin-to-IP → revalidate each hop; exhaustive IANA private-IP
   blocking).
 - **Tier-3 browser:** runs in a separate sidecar container (hosted); every browser
-  request is fulfilled through `guardedFetch` (`route.fulfill`, never
-  `route.continue`), so the browser makes no direct egress.
+  HTTP/subresource request is fulfilled through `guardedFetch` (`route.fulfill`,
+  never `route.continue`). Transport-layer egress below request interception
+  (WebRTC STUN/TURN UDP, QUIC) is not reachable by interception: on local it is
+  killed by the `disable_non_proxied_udp` Chromium flag (the headless-shell
+  launcher), and on hosted it is stopped only by the browser Pod's egress
+  firewall — a deployment prerequisite this repo does not ship (without an
+  equivalent boundary, hosted Tier-3 is unsupported).
 - **Auth:** the hosted flavor authenticates every `/mcp` request via gateway OAuth
   (PKCE S256, hash-only token storage, replay-revoking refresh rotation,
   per-request scope enforcement).
