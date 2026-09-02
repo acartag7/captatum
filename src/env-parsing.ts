@@ -25,8 +25,8 @@ export function envList(name: string): string[] {
  * fail CLOSED at boot instead of silently disabling the protected behavior —
  * an unparseable selector must never widen a sandbox or trust boundary.
  */
-export function envStrictBoolean(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
+export function envStrictBoolean(name: string, fallback: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
   const trimmed = raw.trim();
   if (trimmed === "true") return true;

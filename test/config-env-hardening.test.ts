@@ -127,3 +127,15 @@ test("bulk selectors fail closed at boot even when bulk is DISABLED (codex round
   process.env.CAPTATUM_BULK_QUOTA_WINDOW_SECONDS = "120";
   assert.equal(createHostedBulk({} as never, clock), undefined, "disabled bulk stays undefined with valid knobs");
 });
+
+test("hosted auth gate uses the same strict parse (trim-then-literal, injected env supported)", async () => {
+  const { assertHostedCloudflareAccess } = await import("../src/application/mcp-sso-config.ts");
+  const base = { CF_ACCESS_AUDIENCE: "a", CF_ACCESS_CERTS_URL: "https://cf.test/c", CF_ACCESS_ISSUER: "https://cf.test" };
+  // " true " is valid per the selector contract — the gate must NOT reject it (was: raw ===)
+  assertHostedCloudflareAccess({ ...base, CF_ACCESS_ENABLED: " true " });
+  assert.doesNotThrow(() => assertHostedCloudflareAccess({ ...base, CF_ACCESS_ENABLED: "true\n" }));
+  for (const v of ["TRUE", "1", "yes"]) {
+    assert.throws(() => assertHostedCloudflareAccess({ ...base, CF_ACCESS_ENABLED: v }), /CF_ACCESS_ENABLED/, v);
+  }
+  assert.throws(() => assertHostedCloudflareAccess({ ...base }), /Cloudflare Access/);
+});
