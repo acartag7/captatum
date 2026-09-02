@@ -84,7 +84,11 @@ export class PlaywrightRenderer implements RenderPort {
 
   async render(input: RenderInput): Promise<RenderOutput> {
     const actions: RenderAction[] = [serviceWorkerAction()];
-    const state = new RenderRouteState(input, actions, this.guard);
+    // Render-lifetime abort: single-fetch renders compose no caller signal, so an
+    // in-flight subresource fetch kept egressing past the returned result (2026-09-01).
+    const renderLifetime = new AbortController();
+    const scopedInput: RenderInput = { ...input, signal: input.signal ? AbortSignal.any([input.signal, renderLifetime.signal]) : renderLifetime.signal };
+    const state = new RenderRouteState(scopedInput, actions, this.guard);
     // ONE deadline for the whole render (codex P1 r2): every phase shares the per-tier timeoutMs.
     const startedAt = Date.now();
     const remaining = (): number => Math.max(0, input.timeoutMs - (Date.now() - startedAt));
@@ -128,19 +132,16 @@ export class PlaywrightRenderer implements RenderPort {
       }
       state.setMainFrame(page.mainFrame());
       await installPageControls(context, page, actions, input.timeoutMs);
-      // POPUP-EGRESS FIX: route at the CONTEXT level. page.route covers only the
-      // page and its frames — a window.open / target=_blank popup is a NEW target
-      // whose requests egress browser-direct, bypassing the guarded FetcherPort
-      // entirely (executed PoC: 5 uninstrumented connections incl. loopback
-      // navigations). Context routing intercepts every page in the context, so
-      // anything a popup fires before it is closed still resolves through the
-      // same guarded fulfillment as any subresource.
+      // POPUP-EGRESS FIX: route at the CONTEXT level — page.route covers only the page
+      // and its frames; a popup is a NEW target egressing browser-direct past the guarded
+      // FetcherPort (executed PoC: 5 uninstrumented connections). Context routing covers
+      // every page in the context, popups included.
       await context.route("**/*", (route) => state.handle(route));
       const response = await withTimeout(
         page.goto(input.url, { waitUntil: "domcontentloaded", timeout: remaining() }),
         remaining(),
       );
-      // Idle-aware settle: networkidle then a content-stability dwell; a 0 cap skips the wait.
+      // Idle-aware settle: networkidle then a content-stability dwell (0 cap skips).
       const networkidleCap = Math.min(this.settleMs, Math.max(0, remaining() - this.settleMinDwellMs));
       if (networkidleCap > 0) await page.waitForLoadState("networkidle", { timeout: networkidleCap }).catch(() => {});
       const settleCap = Math.min(this.settleMs, remaining());
@@ -160,15 +161,15 @@ export class PlaywrightRenderer implements RenderPort {
         }
       } catch { /* iframe capture best-effort */ }
       const domTextLength = await liveDomTextLength(page); // #154: live DOM text (shadow-DOM/computed)
-      // Advisory byte cap: truncate rendered HTML at the cap + keep it (with a note), not drop it.
+      // Advisory byte cap: truncate at the cap + keep it (with a note), not drop it.
       const { bytes, truncated } = capRenderedBytes(content, input.maxBytes);
       const notice: ProvenanceError | undefined = truncated
-        ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` }
-        : undefined;
+        ? { code: "max_bytes", message: `Rendered content truncated at ${input.maxBytes} bytes` } : undefined;
       return renderSuccess(input, page.url(), response?.status() ?? state.status, bytes, state, notice, domTextLength);
     } catch (error) {
       return renderFailure(state.fatal ?? rejectFromError(error), actions, state);
     } finally {
+      renderLifetime.abort();
       if (onSignalAbort && input.signal) input.signal.removeEventListener("abort", onSignalAbort);
       await closeQuietly(page);
       await closeQuietly(context);
@@ -200,8 +201,7 @@ export class PlaywrightRenderer implements RenderPort {
       void connect.then(
         (browser) => {
           if (this.cdpWaiters > 0) { this.cdpBrowser = browser; return; }
-          // No waiter remains (every deadline fired): a late-arriving browser must not
-          // linger against the relay's 32-connection cap (codex P2 r2 semantics kept).
+          // No waiter remains: close a late-arriving browser (codex P2 r2 semantics).
           this.cdpConnecting = undefined;
           void browser.close().catch(() => {});
         },
