@@ -37,6 +37,15 @@ jobs:
       - run: pnpm run check
       - run: pnpm test
       - run: pnpm run test:acceptance  # frozen acceptance suite (activated phases)
+      # The release gate must also run the REAL-Chromium security fixtures — the
+      # threat model's hosted-ship condition (SSRF + popup egress). Until now a
+      # v* tag could publish npm+GHCR with no browser test having run anywhere
+      # (2026-09-01 finding: both the popup-egress regression and tier3-ssrf
+      # were absent from every publish path).
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Verify Chromium launches (no silent skip)
+        run: node --input-type=module -e "const {chromium}=await import('playwright'); const b=await chromium.launch(); await b.close();"
+      - run: node --no-warnings --test test/integration/fixtures.test.ts test/integration/popup-egress.test.ts test/integration/tier3-ssrf.test.ts
 
   images:
     needs: gate
