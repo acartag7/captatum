@@ -84,12 +84,12 @@ printResult("render-disabled default behavior", await captatum.execute({ url: SP
 
 const port = await freePort();
 const audit = new SmokeAudit();
-const authRateLimit = new InMemoryAuthRateLimit(clock);
+const authRateLimit = new InMemoryAuthRateLimit(clock); // shared: Bridge + app
 const app = await createHttpApp({
   authRateLimit,
   captatum,
   flavor: "hosted",
-  bridge: new Bridge({ config: oauth, store: createMemoryStore(), clock, audit }),
+  bridge: new Bridge({ config: oauth, store: createMemoryStore(), clock, audit, rateLimit: authRateLimit }),
   authorizer: new RequestAuthorizer({ config: oauth, clock, audit }),
   identity: smokeIdentity,
   clock,

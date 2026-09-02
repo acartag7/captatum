@@ -121,7 +121,8 @@ async function setup(existing?: {
     consentTokenTtlSeconds: 300,
     authorizationCodeTtlSeconds: 300,
   });
-  const bridge = new Bridge({ config, store: stores.store, clock, audit });
+  const sharedLimiter = new InMemoryAuthRateLimit(clock);
+  const bridge = new Bridge({ config, store: stores.store, clock, audit, rateLimit: sharedLimiter });
   const authorizer = new RequestAuthorizer({ config, clock, audit });
   const captatum = createCaptatumUseCase({
     fetcher: new FakeFetcher(),
@@ -133,7 +134,7 @@ async function setup(existing?: {
     captatum,
     flavor: "hosted",
     bridge,
-    authRateLimit: new InMemoryAuthRateLimit(clock),
+    authRateLimit: sharedLimiter,
     authorizer,
     identity: unusedIdentity,
     clock,

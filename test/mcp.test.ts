@@ -253,14 +253,15 @@ async function setup(options: { transformer?: TransformPort } = {}) {
   const oauthConfig = hostedConfig();
   const fetcher = new FakeFetcher("<main>Fixture raw body</main>");
   const audit = new MemoryAudit();
-  const bridge = new Bridge({ config: oauthConfig, store: createMemoryStore(), clock, audit });
+  const sharedLimiter = new InMemoryAuthRateLimit(clock);
+  const bridge = new Bridge({ config: oauthConfig, store: createMemoryStore(), clock, audit, rateLimit: sharedLimiter });
   const authorizer = new RequestAuthorizer({ config: oauthConfig, clock, audit });
   const captatum = createCaptatumUseCase({ fetcher, extractHtml, transformer: options.transformer, clock });
   const app = await createHttpApp({
     captatum,
     flavor: "hosted",
     bridge,
-    authRateLimit: new InMemoryAuthRateLimit(clock),
+    authRateLimit: sharedLimiter,
     authorizer,
     identity: stubIdentity,
     clock,

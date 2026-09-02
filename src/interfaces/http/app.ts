@@ -94,6 +94,16 @@ export async function createHttpApp(deps: HttpAppDeps): Promise<FastifyInstance>
   if (deps.proxyAuthSecret.length !== 43) {
     throw new Error("Hosted HTTP requires a valid proxy authenticator");
   }
+  // ONE shared limiter map, enforced: the dep must be the SAME instance the Bridge was
+  // constructed with (the field is TS-private but a real property in mcp-sso's emitted
+  // JS; captatum pins its own library). A mismatch — including a Bridge built with NO
+  // limiter, which fail-opens the library-managed OAuth routes — is a boot failure.
+  const bridgeLimiter = (deps.bridge as unknown as { rateLimit?: unknown }).rateLimit;
+  if (bridgeLimiter !== deps.authRateLimit) {
+    throw new Error(
+      "createHttpApp: authRateLimit must be the SAME InMemoryAuthRateLimit instance the Bridge was constructed with (contract: one shared map capped at 4,096 keys). Construct the limiter once and pass it to both.",
+    );
+  }
   const app = Fastify({
     logger: false,
     bodyLimit: config.http.bodyLimitBytes,

@@ -122,12 +122,14 @@ async function setup() {
     redirect_uris: [REDIRECT],
     token_endpoint_auth_method: "none",
   }));
+  const sharedLimiter = new InMemoryAuthRateLimit(clock);
+
   const bridge = new Bridge({
     config: oauthConfig,
     store,
     clock,
     audit,
-    rateLimit: new InMemoryAuthRateLimit(clock), // shared into createHttpApp below
+    rateLimit: sharedLimiter,
     cimdResolver: {
       async resolve(hostname) {
         assert.equal(hostname, "metadata.client.test");
@@ -158,7 +160,7 @@ async function setup() {
   const captatum = createCaptatumUseCase({ fetcher: new FakeFetcher(), extractHtml, clock });
   const app = await createHttpApp({
     captatum, flavor: "hosted", bridge, authorizer, identity: stubIdentity, clock, audit,
-    authRateLimit: new InMemoryAuthRateLimit(clock),
+    authRateLimit: sharedLimiter,
     allowedHosts: [HOST], allowedOrigins: [ORIGIN],
     trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
     proxyAuthSecret: TEST_PROXY_AUTH_SECRET,
