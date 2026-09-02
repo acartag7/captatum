@@ -14,6 +14,17 @@ const SCHEME_PREFIXED_AUTHORITY = /(?:https?|wss?|ftp|file):[\/\\]?([^\s"'<>`\/?
 const RELATIVE_CREDENTIAL_KEY = /[?#&]([^?&#\s"'<>=]{1,64})=[\t ]*([^\s"'<>&#]{1,512})/g;
 const RELATIVE_NETWORK_PATH = /(?:^|[\s"`'(<\[{=;,:!?|>*_~“”‘’«»–—―])[\/\\]{2,}([^\s"'<>`\/?#\\\–\—\―\“\”\‘\’\«\»]{1,2048})/g;
 
+/** Single percent-decode of a captured query/fragment KEY, mirroring how the
+ * absolute-form scanners (URLSearchParams) interpret the same bytes: '+' is a
+ * space, valid %XX sequences decode once, malformed escapes stay literal. */
+function decodeKeyComponent(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, " "));
+  } catch {
+    return raw;
+  }
+}
+
 /** Strip unbalanced trailing prose closers (] and )) — the absolute scanner's
  *  identical helper, kept local to avoid a circular import. */
 function stripTrailingProseClosers(url: string): string {
@@ -38,7 +49,13 @@ export function scanRelativeReferences(
   // on the ?/#/& separator, so the path before it (of ANY length) is irrelevant.
   const normalizedHead = unwrapped.replace(/&(amp|#38|#x26);/gi, "&");
   for (const match of normalizedHead.matchAll(RELATIVE_CREDENTIAL_KEY)) {
-    const key = match[1]?.toLowerCase() ?? "";
+    // Percent-decode the captured key (single decode, '+' as space) BEFORE the
+    // set lookup — the same interpretation URLSearchParams gives the absolute
+    // form's keys. Executed 2026-09-01: `/cb?%61ccess_token=…` egressed to the
+    // hosted LLM while the byte-identical credential in absolute form was
+    // flagged; the absolute scanners decoded, this raw capture did not.
+    // Tolerant on malformed escapes (they stay literal, like URLSearchParams).
+    const key = decodeKeyComponent(match[1] ?? "").toLowerCase();
     if (CONTENT_CREDENTIAL_QUERY_KEYS.has(key)) {
       return { reason: "content_embedded_signed_or_tokenized_url" };
     }
