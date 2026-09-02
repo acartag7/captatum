@@ -408,7 +408,10 @@ one `fail` entry + a `failures[]` row, NOT a tool-level error.
    composed with it); transform abort is dispatch-level (raceWallAbort abandons slow LLM calls).
    The Tier-2 board short-circuit is not signal-
    threaded (it does no fetch for a non-board URL, and bulk pre-rejects board roots).
-   Additive: single-fetch callers pass nothing and are unchanged.
+   Additive at the API level: single-fetch callers still pass nothing — but they are
+   NOT unchanged at runtime: every render now composes an INTERNAL render-lifetime
+   abort (see the parenthetical above), so a no-signal single-fetch render's
+   in-flight subresources cancel when its result settles.
 2. `ToolAuditEvent.tool` widens to `"captatum" | "captatum_bulk"` and gains
    optional `bulkId?: string`. Bulk emits **per-seed** events (one per seed,
    `tool:"captatum_bulk"` + `bulkId` + `url_host`) plus one **summary** event
