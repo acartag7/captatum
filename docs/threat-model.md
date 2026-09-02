@@ -639,7 +639,10 @@ High-confidence signals (still flagged — in the source url AND embedded in con
   (path-length caps were a bypass — a credential after a 2 050-char generated path
   must not egress): (1) a KEY-anchored scan — any `?`/`#`/`&` followed by
   `credential-key=value` flags, wherever the reference starts, with HTML-escaped
-  separators normalized; (2) a NETWORK-PATH scan — `//authority` references carry a
+  separators normalized and the captured KEY percent-decoded (single decode, `+`
+  as space — the same interpretation `URLSearchParams` gives the absolute form;
+  executed 2026-09-01: `/cb?%61ccess_token=…` previously egressed to the hosted
+  LLM while the identical absolute spelling was flagged); (2) a NETWORK-PATH scan — `//authority` references carry a
   host, so the userinfo/internal-host/loopback checks apply via a dummy scheme,
   and an UNPARSEABLE authority fails CLOSED (an exposed password aimed at a
   private host behind an invalid port must not egress because the parser gave
