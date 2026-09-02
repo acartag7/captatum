@@ -22,7 +22,7 @@ days.
 
 ## Supported versions
 
-Only the **latest release** line receives security fixes (currently **v0.20.x**).
+Only the **latest release** line receives security fixes — currently **v0.20.2**. Earlier 0.20.x patches do not carry the latest security fixes (0.20.2 added the popup-egress, credential-URL, WHATWG-backslash, and schema-ReDoS fixes over 0.20.0/0.20.1); upgrade to the newest patch rather than staying on an older v0.20.
 Pin to a released tag; `main` is unreleased and may change.
 
 ## Threat model (authoritative)
